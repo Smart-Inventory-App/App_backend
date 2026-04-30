@@ -20,5 +20,4 @@ async def get_version():
 async def test_endpoint():
     """Test endpoint for frontend connection"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"✅ Frontend connected to backend! [{now}]")
-    return {"status": "success", "message": "Connection working!"}
+    return {"status": "success", "message": f"Frontend connected to backend! [{now}]"}
