@@ -1,0 +1,8 @@
+# Railway deployment configuration
+# Environment variables for Railway:
+# - DATABASE_URL: Will be auto-set by Railway PostgreSQL plugin
+# - DEBUG: false
+# - SECRET_KEY: Generate and set in Railway dashboard
+# - ALLOWED_ORIGINS: Set as needed for your frontend domain
+# - HOST: 0.0.0.0 (default)
+# - PORT: 8000 (default)
