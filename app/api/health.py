@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from datetime import datetime
 
 router = APIRouter(tags=["health"])
 
@@ -18,5 +19,6 @@ async def get_version():
 @router.get("/test")
 async def test_endpoint():
     """Test endpoint for frontend connection"""
-    print("✅ Frontend connected to backend!")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"✅ Frontend connected to backend! [{now}]")
     return {"status": "success", "message": "Connection working!"}
