@@ -30,13 +30,15 @@ class KeycloakService:
 
     # ------------------------------------------------------------------ admin token
     async def _get_admin_token(self) -> str:
+        """Get a short-lived admin token via master-realm admin-cli (password grant)."""
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{settings.KEYCLOAK_URL}/realms/master/protocol/openid-connect/token",
                 data={
-                    "grant_type": "client_credentials",
-                    "client_id": settings.KEYCLOAK_ADMIN_CLIENT_ID,
-                    "client_secret": settings.KEYCLOAK_ADMIN_CLIENT_SECRET,
+                    "grant_type": "password",
+                    "client_id": "admin-cli",
+                    "username": settings.KEYCLOAK_ADMIN_USERNAME,
+                    "password": settings.KEYCLOAK_ADMIN_PASSWORD,
                 },
                 timeout=10.0,
             )
@@ -84,6 +86,8 @@ class KeycloakService:
                 json={
                     "email": email,
                     "username": email,
+                    "firstName": email.split("@")[0],
+                    "lastName": email.split("@")[1] if "@" in email else "user",
                     "enabled": True,
                     "emailVerified": True,
                     "credentials": [
@@ -93,11 +97,10 @@ class KeycloakService:
                 timeout=10.0,
             )
             if resp.status_code == 409:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="EMAIL_TAKEN",
-                )
-            resp.raise_for_status()
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="EMAIL_TAKEN")
+            if not resp.is_success:
+                logger.error("Keycloak register error %s: %s", resp.status_code, resp.text)
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Auth service error")
 
     # ------------------------------------------------------------------ email check
     async def email_exists(self, email: str) -> bool:
