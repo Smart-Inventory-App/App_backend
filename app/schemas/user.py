@@ -3,49 +3,75 @@ from datetime import datetime
 from typing import Optional
 
 
+class UserRegister(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = None
+    token_type: str = "bearer"
+
+
+class EmailCheckRequest(BaseModel):
+    email: EmailStr
+
+
+class EmailCheckResponse(BaseModel):
+    exists: bool
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class VerifyCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
+
+
+class ResetTokenResponse(BaseModel):
+    reset_token: str
+
+
+class ResetPasswordRequest(BaseModel):
+    reset_token: str
+    new_password: str
+
+
+# Keep legacy schemas so existing code that imports them doesn't break
 class UserBase(BaseModel):
-    """Base user schema"""
     email: EmailStr
     username: str
 
 
 class UserCreate(UserBase):
-    """User creation schema"""
-    password: str
-
-
-class UserLogin(BaseModel):
-    """User login schema"""
-    email: EmailStr
     password: str
 
 
 class UserResponse(UserBase):
-    """User response schema"""
     id: int
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
 
-class TokenResponse(BaseModel):
-    """Token response schema"""
-    access_token: str
-    token_type: str = "bearer"
-
-
 class TransactionBase(BaseModel):
-    """Base transaction schema"""
     amount: int
     description: str
 
 
 class TransactionResponse(TransactionBase):
-    """Transaction response schema"""
     id: int
     user_id: int
     created_at: datetime
-    
+
     class Config:
         from_attributes = True

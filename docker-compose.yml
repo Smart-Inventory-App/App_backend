@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:16-alpine
@@ -18,6 +16,19 @@ services:
       timeout: 5s
       retries: 5
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: tpp_keycloak
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: dev-mem        # in-memory DB para dev (no necesita postgres propio)
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "8080:8080"
+
   backend:
     build:
       context: .
@@ -25,9 +36,15 @@ services:
     container_name: tpp_backend
     environment:
       DATABASE_URL: postgresql://${DB_USER:-user}:${DB_PASSWORD:-password}@db:5432/${DB_NAME:-tpp_db}
-      DEBUG: ${DEBUG:-False}
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8081,http://localhost:8100}
+      DEBUG: ${DEBUG:-True}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8081,http://localhost:8100,http://localhost:19000,http://10.0.2.2:8000}
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: tpp
+      KEYCLOAK_CLIENT_ID: tpp-app
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      KEYCLOAK_ADMIN_CLIENT_ID: admin-cli
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-}
     ports:
       - "8000:8000"
     depends_on:

@@ -4,9 +4,8 @@ from app.core.database import Base
 
 
 class User(Base):
-    """User model"""
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     username = Column(String, unique=True, index=True)
@@ -16,11 +15,22 @@ class User(Base):
 
 
 class Transaction(Base):
-    """Transaction model"""
     __tablename__ = "transactions"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, index=True)
-    amount = Column(Integer)  # Store as cents/smallest unit
+    amount = Column(Integer)
     description = Column(String)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PasswordRecoveryCode(Base):
+    """Short-lived 6-digit codes for password recovery."""
+    __tablename__ = "password_recovery_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, index=True, nullable=False)
+    code = Column(String, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
