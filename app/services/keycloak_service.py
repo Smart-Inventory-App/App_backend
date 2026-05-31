@@ -146,6 +146,25 @@ class KeycloakService:
                 )
             resp.raise_for_status()
 
+    # ------------------------------------------------------------------ social / PKCE exchange
+    async def exchange_code(self, code: str, redirect_uri: str, code_verifier: Optional[str] = None) -> dict:
+        data: dict = {
+            "grant_type": "authorization_code",
+            "client_id": settings.KEYCLOAK_CLIENT_ID,
+            "client_secret": settings.KEYCLOAK_CLIENT_SECRET,
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+        if code_verifier:
+            data["code_verifier"] = code_verifier
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(self._token_url, data=data, timeout=10.0)
+            if resp.status_code in (400, 401):
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="INVALID_CODE")
+            resp.raise_for_status()
+            d = resp.json()
+            return {"access_token": d["access_token"], "refresh_token": d.get("refresh_token"), "token_type": "bearer"}
+
     # ------------------------------------------------------------------ validate token
     async def validate_token(self, token: str) -> dict:
         async with httpx.AsyncClient() as client:

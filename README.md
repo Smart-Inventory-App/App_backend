@@ -1,224 +1,177 @@
-# App Backend - TPP
+# App Backend — Smart Inventory
 
-FastAPI backend para Smart Inventory Application.
-
----
-
-## 📋 Tabla de Contenidos
-
-1. [Setup Local](#setup-local)
-2. [Desarrollo](#desarrollo)
-3. [Testing](#testing)
-4. [Preparar para Deployment](#preparar-para-deployment)
-5. [Deployment](#deployment)
-6. [Troubleshooting](#troubleshooting)
+FastAPI + Keycloak backend para Smart Inventory.
 
 ---
 
-## Setup Local
+## Requisitos
 
-### Requisitos Previos
-
-- **Docker & Docker Compose** (para desarrollo con containers)
-- **Python 3.10+** (opcional, para desarrollo sin Docker)
-- **WSL 2** (en Windows)
+- **Docker & Docker Compose**
+- **Python 3.10+**
 - **Git**
 
-### Opción 1: Setup con Docker (Recomendado)
+---
 
-#### Paso 1: Clonar y navegar al proyecto
+## Setup local
 
-```bash
-cd App_backend
-```
+### 1. Crear el `.env`
 
-#### Paso 2: Crear archivo `.env` para desarrollo
+Copiar el ejemplo y completar los valores:
 
 ```bash
-cat > .env << 'EOF'
-# Database
-DATABASE_URL=postgresql://user:password@db:5432/tpp_db
-
-# API Config
-API_TITLE=TPP API
-API_VERSION=1.0.0
-DEBUG=True
-SECRET_KEY=dev-secret-key-change-in-production
-
-# CORS
-ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8081,http://localhost:8100,http://localhost:19000,http://10.0.2.2:8000
-
-# JWT
-JWT_ALGORITHM=HS256
-JWT_EXPIRATION_HOURS=24
-
-# Server
-HOST=0.0.0.0
-PORT=8000
-EOF
+cp .env.example .env
 ```
 
-#### Paso 3: Levantar los containers
+### 2. Crear el virtualenv e instalar dependencias
 
 ```bash
-# Inicia PostgreSQL + FastAPI
-docker-compose up -d
-
-# Verifica que esté corriendo
-docker ps
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
-Deberías ver dos containers:
-- `tpp_db` (PostgreSQL)
-- `tpp_backend` (FastAPI)
+En Windows usar `.venv\Scripts\pip`.
 
-#### Paso 4: Verificar que está funcionando
+### 3. Levantar Postgres y Keycloak
 
 ```bash
-# Ver logs en vivo
-docker-compose logs -f backend
-
-# Acceder a la API
-curl http://localhost:8000/health
+docker compose up -d db keycloak
 ```
 
-#### Paso 5: Acceder a la documentación
+Esto levanta:
+- `tpp_db` — PostgreSQL en el puerto `5432`
+- `tpp_keycloak` — Keycloak en http://localhost:8080 (admin / admin)
 
-Abre tu navegador:
-- **Swagger UI (interactivo):** http://localhost:8000/docs
-- **ReDoc:** http://localhost:8000/redoc
+Esperar ~15 segundos a que Keycloak termine de iniciar antes del siguiente paso.
 
+### 4. Crear las tablas en la DB
 
-## Desarrollo
+```bash
+.venv/bin/alembic upgrade head
+```
 
-### Estructura del Proyecto
+### 5. Configurar Keycloak (primera vez)
+
+El realm `tpp` y el cliente `tpp-app` se deben crear una sola vez. Ejecutar el siguiente script:
+
+```bash
+.venv/bin/python scripts/setup_keycloak.py
+```
+
+> Si el script no existe todavía, crear el realm y cliente manualmente desde http://localhost:8080 con los valores del `.env`, o pedirle al equipo el dump de configuración.
+
+### 6. Levantar el backend
+
+```bash
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Verificar en: http://localhost:8000  
+Swagger: http://localhost:8000/docs
+
+---
+
+## Estructura del proyecto
 
 ```
 App_backend/
 ├── app/
-│   ├── main.py              # Punto de entrada
-│   ├── api/                 # Endpoints
-│   │   ├── auth.py
+│   ├── api/
+│   │   ├── auth.py          # Endpoints de autenticación (Keycloak)
 │   │   ├── health.py
 │   │   └── transactions.py
-│   ├── core/                # Configuración
-│   │   ├── config.py
+│   ├── core/
+│   │   ├── config.py        # Settings (pydantic-settings)
 │   │   ├── database.py
-│   │   └── security.py
-│   ├── models/              # SQLAlchemy models
-│   │   └── user.py
-│   ├── routers/             # FastAPI routers
-│   │   ├── api.py
-│   │   └── auth.py
-│   ├── schemas/             # Pydantic schemas
-│   │   └── user.py
-│   └── services/            # Lógica de negocio
+│   │   └── security.py      # Validación de token via Keycloak introspection
+│   ├── models/
+│   │   └── user.py          # User, Transaction, PasswordRecoveryCode
+│   ├── schemas/
+│   │   └── user.py          # Pydantic schemas
+│   └── services/
+│       ├── keycloak_service.py  # Wrapper sobre la REST API de Keycloak
 │       └── user_service.py
-├── tests/                   # Tests
-├── Dockerfile
+├── alembic/
+│   └── versions/
+│       ├── 0001_initial_schema.py
+│       ├── d363a82a2827_testeo.py
+│       └── a1b2c3d4e5f6_add_password_recovery_codes.py
 ├── docker-compose.yml
 ├── requirements.txt
-└── .env                     # Configuración (no commitar)
+├── .env                     # No se commitea
+└── .env.example
 ```
 
-### Endpoints Principales
+---
+
+## Endpoints de autenticación
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/version` | Versión del API |
-| GET | `/test` | Test de conexión |
-| POST | `/auth/register` | Registrar usuario |
-| POST | `/auth/login` | Login |
+| POST | `/auth/register` | Crear usuario en Keycloak |
+| POST | `/auth/login` | Login → devuelve JWT de Keycloak |
+| GET | `/auth/me` | Info del usuario autenticado |
+| POST | `/auth/check-email` | Verifica si un email ya está registrado |
+| POST | `/auth/forgot-password` | Envía código de 6 dígitos por mail (o lo imprime en consola si SMTP no está configurado) |
+| POST | `/auth/verify-code` | Valida el código → devuelve `reset_token` |
+| POST | `/auth/reset-password` | Cambia la contraseña usando el `reset_token` |
 
-### Ver logs en desarrollo
+---
+
+## Migraciones
 
 ```bash
-# Con Docker
-docker-compose logs -f backend
+# Aplicar todas las migraciones
+.venv/bin/alembic upgrade head
 
-# Sin Docker
-# Los logs aparecen en consola automáticamente
+# Ver estado actual
+.venv/bin/alembic current
+
+# Crear nueva migración (después de cambiar un modelo)
+.venv/bin/alembic revision --autogenerate -m "descripción"
 ```
 
-### Editar la base de datos en desarrollo
+---
+
+## Acceso directo a la DB
 
 ```bash
-# Acceso directo a PostgreSQL
 docker exec -it tpp_db psql -U user -d tpp_db
-
-# O con psql instalado localmente
-psql -U user -d tpp_db -h localhost
 ```
 
 ---
 
-## Testing
+## Arquitectura de autenticación
 
-### Ejecutar tests
+El backend **no genera ni almacena tokens propios**. Actúa como proxy entre el frontend y Keycloak:
 
-```bash
-# Con Docker
-docker-compose exec backend pytest
-
-# Sin Docker (con venv activado)
-pytest
+```
+Frontend → Backend → Keycloak
+  login()    POST /auth/login    Direct Grant (usuario + contraseña)
+  register() POST /auth/register Admin API (crea usuario en Keycloak)
+  request()  Bearer token        Keycloak introspection por request
 ```
 
-### Tests disponibles
-
-```bash
-# Todos los tests
-pytest
-
-# Solo tests de auth
-pytest tests/test_auth.py
-
-# Con output verbose
-pytest -v
-
-# Solo un test específico
-pytest tests/test_auth.py::test_login
-```
-
+Los códigos de recuperación de contraseña (6 dígitos, validez 1h) sí se almacenan en la tabla `password_recovery_codes`.
 
 ---
 
-## Detener todo
+## Troubleshooting
 
+**`ModuleNotFoundError: No module named 'pydantic_settings'`**
 ```bash
-# Detener containers
-docker-compose down
-
-# Detener y remover volúmenes (cuidado: elimina datos)
-docker-compose down -v
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
----
-
-## 🐛 Troubleshooting
-
-**"Module not found" errors:**
+**`connection refused` en puerto 5432 o 8080**
 ```bash
-docker-compose down
-docker-compose build --no-cache
-docker-compose up -d
+docker compose up -d db keycloak
+# Esperar ~15s y reintentar
 ```
 
-**PostgreSQL connection refused:**
-```bash
-# Verifica que tpp_db esté healthy
-docker ps
-# Si no está healthy, espera 10 segundos y reinicia
-docker-compose restart backend
-```
+**`Auth service unavailable`** al llamar `/auth/register` o `/auth/login`
+- Keycloak no terminó de iniciar. Esperá y reintentá.
+- Verificar: `curl http://localhost:8080` debe devolver un redirect.
 
----
-
-## 🔗 Conexión Frontend
-
-El frontend en `App_Frontend` se conecta a través de HTTP:
-- URL: `http://localhost:8000`
-- Variable de entorno: `EXPO_PUBLIC_API_URL`
-
-Prueba la conexión con el botón "Test Backend" en la app.
+**`Account is not fully set up`** al hacer login en Keycloak
+- El realm `tpp` no tiene el perfil de usuario configurado correctamente.
+- Seguir el paso 5 de Setup para reconfigurar el realm.

@@ -1,4 +1,4 @@
-"""Auth endpoints — wrap Keycloak with our own UI flow."""
+
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,6 +15,7 @@ from app.schemas.user import (
     ForgotPasswordRequest,
     ResetPasswordRequest,
     ResetTokenResponse,
+    SocialCallbackRequest,
     TokenResponse,
     UserLogin,
     UserRegister,
@@ -115,3 +116,8 @@ async def reset_password(body: ResetPasswordRequest):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
     await keycloak.reset_password(user_id, body.new_password)
     return {"detail": "Contraseña actualizada"}
+
+
+@router.post("/social-callback", response_model=TokenResponse)
+async def social_callback(body: SocialCallbackRequest):
+    return await keycloak.exchange_code(body.code, body.redirect_uri, body.code_verifier)

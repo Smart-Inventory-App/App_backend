@@ -45,6 +45,12 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
+class SocialCallbackRequest(BaseModel):
+    code: str
+    redirect_uri: str
+    code_verifier: Optional[str] = None
+
+
 # Keep legacy schemas so existing code that imports them doesn't break
 class UserBase(BaseModel):
     email: EmailStr
