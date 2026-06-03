@@ -1,5 +1,9 @@
 # App Backend — Smart Inventory
 
+Test Coverage:
+
+[![codecov](https://codecov.io/github/Smart-Inventory-App/App_backend/graph/badge.svg?token=LQMB0H4SY1)](https://codecov.io/github/Smart-Inventory-App/App_backend)
+
 FastAPI + Keycloak backend para Smart Inventory.
 
 ---
