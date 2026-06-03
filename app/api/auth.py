@@ -13,6 +13,7 @@ from app.schemas.user import (
     EmailCheckRequest,
     EmailCheckResponse,
     ForgotPasswordRequest,
+    LogoutRequest,
     ResetPasswordRequest,
     ResetTokenResponse,
     SocialCallbackRequest,
@@ -121,3 +122,9 @@ async def reset_password(body: ResetPasswordRequest):
 @router.post("/social-callback", response_model=TokenResponse)
 async def social_callback(body: SocialCallbackRequest):
     return await keycloak.exchange_code(body.code, body.redirect_uri, body.code_verifier)
+
+
+@router.post("/logout", status_code=204)
+async def logout(body: LogoutRequest):
+    await keycloak.logout(body.refresh_token)
+    return None

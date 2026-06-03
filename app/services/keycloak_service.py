@@ -146,6 +146,21 @@ class KeycloakService:
                 )
             resp.raise_for_status()
 
+    # ------------------------------------------------------------------ logout
+    async def logout(self, refresh_token: str) -> None:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                self._token_url.replace("/token", "/logout"),
+                data={
+                    "client_id": settings.KEYCLOAK_CLIENT_ID,
+                    "client_secret": settings.KEYCLOAK_CLIENT_SECRET,
+                    "refresh_token": refresh_token,
+                },
+                timeout=10.0,
+            )
+            if resp.status_code not in (200, 204):
+                logger.warning("Keycloak logout returned %s", resp.status_code)
+
     # ------------------------------------------------------------------ social / PKCE exchange
     async def exchange_code(self, code: str, redirect_uri: str, code_verifier: Optional[str] = None) -> dict:
         data: dict = {

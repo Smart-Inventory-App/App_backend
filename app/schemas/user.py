@@ -51,6 +51,10 @@ class SocialCallbackRequest(BaseModel):
     code_verifier: Optional[str] = None
 
 
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+
 # Keep legacy schemas so existing code that imports them doesn't break
 class UserBase(BaseModel):
     email: EmailStr
