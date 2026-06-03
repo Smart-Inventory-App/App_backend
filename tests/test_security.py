@@ -37,7 +37,7 @@ async def test_get_current_user_valid():
     from app.core.security import get_current_user
     from fastapi.security import HTTPAuthorizationCredentials
 
-    with patch("app.core.security.keycloak") as mock_kc:
+    with patch("app.services.keycloak_service.keycloak") as mock_kc:
         mock_kc.validate_token = AsyncMock(return_value={"sub": "uuid", "email": "u@u.com"})
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="fake-token")
         result = await get_current_user(credentials=creds)
@@ -50,7 +50,7 @@ async def test_get_current_user_invalid():
     from app.core.security import get_current_user
     from fastapi.security import HTTPAuthorizationCredentials
 
-    with patch("app.core.security.keycloak") as mock_kc:
+    with patch("app.services.keycloak_service.keycloak") as mock_kc:
         mock_kc.validate_token = AsyncMock(side_effect=HTTPException(status_code=401, detail="invalid"))
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="bad-token")
         with pytest.raises(HTTPException):

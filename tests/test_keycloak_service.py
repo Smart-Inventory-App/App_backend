@@ -38,10 +38,14 @@ async def test_get_admin_token_success():
 
 @pytest.mark.asyncio
 async def test_get_admin_token_failure():
+    import httpx as _httpx
+
     resp = MagicMock()
     resp.status_code = 401
     resp.text = "Unauthorized"
-    resp.raise_for_status = MagicMock(side_effect=Exception("401"))
+    resp.raise_for_status = MagicMock(
+        side_effect=_httpx.HTTPStatusError("401", request=MagicMock(), response=MagicMock())
+    )
     client = AsyncMock()
     client.post = AsyncMock(return_value=resp)
     client.__aenter__ = AsyncMock(return_value=client)
