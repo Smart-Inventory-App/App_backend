@@ -23,11 +23,17 @@ services:
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_DB: dev-mem        # in-memory DB para dev (no necesita postgres propio)
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/tpp_db
+      KC_DB_USERNAME: ${DB_USER:-user}
+      KC_DB_PASSWORD: ${DB_PASSWORD:-password}
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
     ports:
       - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
 
   backend:
     build:
