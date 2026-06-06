@@ -24,6 +24,7 @@ def _get_user_product(product_id: int, user_id: str, db: Session) -> Product:
 async def list_products(
     search: Optional[str] = Query(None),
     categoria: Optional[str] = Query(None),
+    ubicacion: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -36,6 +37,8 @@ async def list_products(
         )
     if categoria:
         query = query.filter(Product.categoria.ilike(categoria))
+    if ubicacion:
+        query = query.filter(Product.ubicacion.ilike(ubicacion))
     return query.order_by(Product.created_at.desc()).all()
 
 

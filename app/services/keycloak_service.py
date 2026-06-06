@@ -165,6 +165,25 @@ class KeycloakService:
             d = resp.json()
             return {"access_token": d["access_token"], "refresh_token": d.get("refresh_token"), "token_type": "bearer"}
 
+    # ------------------------------------------------------------------ update profile
+    async def update_profile(self, user_id: str, first_name: str, last_name: str, username: Optional[str] = None) -> None:
+        admin_token = await self._get_admin_token()
+        payload: dict = {"firstName": first_name, "lastName": last_name}
+        if username:
+            payload["username"] = username
+        async with httpx.AsyncClient() as client:
+            resp = await client.put(
+                f"{self._admin_users_url}/{user_id}",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json=payload,
+                timeout=10.0,
+            )
+            if resp.status_code == 400:
+                body = resp.json() if resp.content else {}
+                detail = body.get("errorMessage", body.get("error", "Invalid profile data"))
+                raise HTTPException(status_code=400, detail=detail)
+            resp.raise_for_status()
+
     # ------------------------------------------------------------------ validate token
     async def validate_token(self, token: str) -> dict:
         async with httpx.AsyncClient() as client:

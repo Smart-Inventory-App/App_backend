@@ -51,6 +51,20 @@ class SocialCallbackRequest(BaseModel):
     code_verifier: Optional[str] = None
 
 
+class ProfileResponse(BaseModel):
+    sub: str
+    email: Optional[str] = None
+    username: Optional[str] = None
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+
+
+class ProfileUpdate(BaseModel):
+    firstName: str
+    lastName: str
+    username: Optional[str] = None
+
+
 # Keep legacy schemas so existing code that imports them doesn't break
 class UserBase(BaseModel):
     email: EmailStr

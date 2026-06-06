@@ -11,6 +11,7 @@ class ProductCreate(BaseModel):
     vencimiento: Optional[date] = None
     descripcion: Optional[str] = None
     imagen_url: Optional[str] = None
+    ubicacion: Optional[str] = None
 
 
 class ProductUpdate(BaseModel):
@@ -21,6 +22,7 @@ class ProductUpdate(BaseModel):
     vencimiento: Optional[date] = None
     descripcion: Optional[str] = None
     imagen_url: Optional[str] = None
+    ubicacion: Optional[str] = None
 
 
 class ProductResponse(BaseModel):
@@ -33,6 +35,7 @@ class ProductResponse(BaseModel):
     vencimiento: Optional[date] = None
     descripcion: Optional[str] = None
     imagen_url: Optional[str] = None
+    ubicacion: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
