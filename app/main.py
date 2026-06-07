@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import auth, transactions, health
+from app.api import auth, transactions, health, products
 from app.routers import api as api_router
 
 # Create FastAPI app
@@ -24,6 +24,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(transactions.router)
+app.include_router(products.router)
 app.include_router(api_router.router)
 
 

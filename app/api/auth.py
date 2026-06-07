@@ -13,6 +13,8 @@ from app.schemas.user import (
     EmailCheckRequest,
     EmailCheckResponse,
     ForgotPasswordRequest,
+    ProfileResponse,
+    ProfileUpdate,
     ResetPasswordRequest,
     ResetTokenResponse,
     SocialCallbackRequest,
@@ -71,6 +73,29 @@ async def me(current_user: dict = Depends(get_current_user)):
         "username": current_user.get("preferred_username"),
         "sub": current_user.get("sub"),
     }
+
+
+@router.get("/profile", response_model=ProfileResponse)
+async def get_profile(current_user: dict = Depends(get_current_user)):
+    return ProfileResponse(
+        sub=current_user["sub"],
+        email=current_user.get("email"),
+        username=current_user.get("preferred_username"),
+        firstName=current_user.get("given_name", ""),
+        lastName=current_user.get("family_name", ""),
+    )
+
+
+@router.put("/profile", response_model=ProfileResponse)
+async def update_profile(data: ProfileUpdate, current_user: dict = Depends(get_current_user)):
+    await keycloak.update_profile(current_user["sub"], data.firstName, data.lastName, data.username)
+    return ProfileResponse(
+        sub=current_user["sub"],
+        email=current_user.get("email"),
+        username=data.username or current_user.get("preferred_username"),
+        firstName=data.firstName,
+        lastName=data.lastName,
+    )
 
 
 @router.post("/forgot-password")
