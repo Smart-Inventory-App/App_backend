@@ -21,18 +21,9 @@ class Settings(BaseSettings):
     def ALLOWED_ORIGINS(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS_STR.split(",") if o.strip()]
 
-    # JWT (used for short-lived password-reset tokens)
+    # JWT — shared secret with Auth service
+    JWT_SECRET: str = "dev-secret-change-in-prod"
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRATION_HOURS: int = 24
-
-    # Keycloak
-    KEYCLOAK_URL: str = "http://localhost:8080"
-    KEYCLOAK_REALM: str = "tpp"
-    KEYCLOAK_CLIENT_ID: str = "tpp-app"
-    KEYCLOAK_CLIENT_SECRET: str = ""
-    # Admin access — uses master-realm admin-cli (password grant)
-    KEYCLOAK_ADMIN_USERNAME: str = "admin"
-    KEYCLOAK_ADMIN_PASSWORD: str = "admin"
 
     # Email (SMTP) for recovery codes
     SMTP_HOST: str = "smtp.gmail.com"
