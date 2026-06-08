@@ -50,7 +50,11 @@ async def create_product(
 ):
     product = Product(user_id=current_user["sub"], **data.model_dump())
     db.add(product)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     db.refresh(product)
     return product
 
