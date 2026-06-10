@@ -1,26 +1,26 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import date, datetime
 from typing import Optional
 
 
 class ProductCreate(BaseModel):
-    nombre: str
+    nombre: str = Field(..., max_length=20)
     marca: Optional[str] = None
-    categoria: str
-    stock: int
+    categoria: str = Field(..., max_length=20)
+    stock: int = Field(..., gt=0)
     vencimiento: Optional[date] = None
-    descripcion: Optional[str] = None
+    descripcion: Optional[str] = Field(None, max_length=400)
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
 
 
 class ProductUpdate(BaseModel):
-    nombre: Optional[str] = None
+    nombre: Optional[str] = Field(None, max_length=20)
     marca: Optional[str] = None
-    categoria: Optional[str] = None
-    stock: Optional[int] = None
+    categoria: Optional[str] = Field(None, max_length=20)
+    stock: Optional[int] = Field(None, gt=0)
     vencimiento: Optional[date] = None
-    descripcion: Optional[str] = None
+    descripcion: Optional[str] = Field(None, max_length=400)
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
 
