@@ -10,30 +10,13 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - tpp-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-user}"]
       interval: 10s
       timeout: 5s
       retries: 5
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:24.0
-    container_name: tpp_keycloak
-    command: start-dev
-    environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://db:5432/tpp_db
-      KC_DB_USERNAME: ${DB_USER:-user}
-      KC_DB_PASSWORD: ${DB_PASSWORD:-password}
-      KC_HOSTNAME_STRICT: "false"
-      KC_HTTP_ENABLED: "true"
-    ports:
-      - "8080:8080"
-    depends_on:
-      db:
-        condition: service_healthy
 
   backend:
     build:
@@ -44,13 +27,8 @@ services:
       DATABASE_URL: postgresql://${DB_USER:-user}:${DB_PASSWORD:-password}@db:5432/${DB_NAME:-tpp_db}
       DEBUG: ${DEBUG:-True}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key}
+      JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8081,http://localhost:8100,http://localhost:19000,http://10.0.2.2:8000}
-      KEYCLOAK_URL: http://keycloak:8080
-      KEYCLOAK_REALM: tpp
-      KEYCLOAK_CLIENT_ID: tpp-app
-      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
-      KEYCLOAK_ADMIN_CLIENT_ID: admin-cli
-      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -59,6 +37,12 @@ services:
     volumes:
       - .:/app
     command: python main.py
+    networks:
+      - tpp-net
 
 volumes:
   postgres_data:
+
+networks:
+  tpp-net:
+    name: tpp-net
