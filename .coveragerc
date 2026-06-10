@@ -1,0 +1,3 @@
+[run]
+omit =
+    app/utils/rpc.py
