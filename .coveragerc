@@ -1,0 +1,7 @@
+[run]
+omit =
+    app/api/auth.py
+    app/routers/*
+    app/services/keycloak_service.py
+    app/services/user_service.py
+    app/utils/rpc.py
