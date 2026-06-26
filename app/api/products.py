@@ -57,11 +57,21 @@ def _check_product_state(product: Product, user: AuthUser):
 
 
 
+SORTABLE_FIELDS = {
+    "nombre": Product.nombre,
+    "stock": Product.stock,
+    "vencimiento": Product.vencimiento,
+    "categoria": Product.categoria,
+}
+
+
 @router.get("/", response_model=list[ProductResponse])
 async def list_products(
     search: Optional[str] = Query(None),
     categoria: Optional[str] = Query(None),
     ubicacion: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query(None, pattern="^(nombre|stock|vencimiento|categoria)$"),
+    sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -76,7 +86,30 @@ async def list_products(
         query = query.filter(Product.categoria.ilike(categoria))
     if ubicacion:
         query = query.filter(Product.ubicacion.ilike(ubicacion))
-    return query.order_by(Product.created_at.desc()).all()
+    if sort_by:
+        column = SORTABLE_FIELDS[sort_by]
+        query = query.order_by(column.desc() if sort_dir == "desc" else column.asc())
+    else:
+        query = query.order_by(Product.created_at.desc())
+    return query.all()
+
+
+@router.get("/filters/options")
+async def get_filter_options(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id = current_user["sub"]
+    base = db.query(Product).filter(Product.user_id == user_id)
+    categorias = [
+        row[0] for row in base.with_entities(Product.categoria).distinct().all()
+        if row[0]
+    ]
+    ubicaciones = [
+        row[0] for row in base.with_entities(Product.ubicacion).distinct().all()
+        if row[0]
+    ]
+    return {"categorias": sorted(categorias), "ubicaciones": sorted(ubicaciones)}
 
 
 @router.post("/", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
