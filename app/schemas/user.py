@@ -11,6 +11,7 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    firebase_token: str
 
 
 class TokenResponse(BaseModel):

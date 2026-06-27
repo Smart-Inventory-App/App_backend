@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -5,7 +7,10 @@ from typing import Optional
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.product import Product
+from app.models.user import AuthUser
 from app.schemas.product import ProductCreate, ProductUpdate, ProductResponse
+
+from app.core.firebase import send_push
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -18,6 +23,39 @@ def _get_user_product(product_id: int, user_id: str, db: Session) -> Product:
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
     return product
+
+def _get_user(user_id: int, db: Session) -> AuthUser:
+    user = db.query(AuthUser).filter(
+        AuthUser.id == user_id
+    ).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
+    return user
+
+def _notificate_low_stock(token: str, product: Product):
+    message_title = "Stock Bajo"
+    message_body = "Hay pocas unidades del producto "+product.nombre+" ("+str(product.stock)+" unidades)."
+    return send_push(token, message_title, message_body)
+    # guardar alerta en db
+
+def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
+    message_title = "Producto próximo a vencerse"
+    message_body = "El producto "+product.nombre+" vence en "+str(expirancy_days)+"dias."
+    return send_push(token, message_title, message_body)
+    # guardar alerta en db
+
+def _check_product_state(product: Product, user: AuthUser):
+    stock_warning = 10 # valor por defecto
+    expirancy_warning = 30
+    if product.stock < stock_warning:
+        response = _notificate_low_stock(user.firebase_token, product)
+        print("\n\nse envio la notificacion de stock: "+response+"\n\n")
+    if product.vencimiento != None:
+        expirancy_days = (product.vencimiento - date.today()).days
+        if expirancy_days < expirancy_warning:
+            response = _notificate_expirancy(user.firebase_token, product, expirancy_days)
+            print("\n\nse envio la notificacion de vencimiento: "+response+"\n\n")
+
 
 
 SORTABLE_FIELDS = {
@@ -111,6 +149,8 @@ async def update_product(
     product = _get_user_product(product_id, current_user["sub"], db)
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(product, field, value)
+    user = _get_user(current_user["sub"], db)
+    _check_product_state(product, user)
     db.commit()
     db.refresh(product)
     return product

@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 
 
 class Settings(BaseSettings):
@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = "noreply@smartinventory.com"
+
+    # Firebase
+    FIREBASE_CREDENTIALS: str
 
     # Server
     HOST: str = "0.0.0.0"
