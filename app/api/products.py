@@ -47,13 +47,14 @@ def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
 def _check_product_state(product: Product, user: AuthUser):
     stock_warning = 10 # valor por defecto
     expirancy_warning = 30
-    expirancy_days = (product.vencimiento - date.today()).days
     if product.stock < stock_warning:
         response = _notificate_low_stock(user.firebase_token, product)
-        print("\n\nse envio la noti de stock: "+response+"\n\n")
-    if expirancy_days < expirancy_warning:
-        response = _notificate_expirancy(user.firebase_token, product, expirancy_days)
-        print("\n\nse envio la noti de vencimiento: "+response+"\n\n")
+        print("\n\nse envio la notificacion de stock: "+response+"\n\n")
+    if product.vencimiento != None:
+        expirancy_days = (product.vencimiento - date.today()).days
+        if expirancy_days < expirancy_warning:
+            response = _notificate_expirancy(user.firebase_token, product, expirancy_days)
+            print("\n\nse envio la notificacion de vencimiento: "+response+"\n\n")
 
 
 
