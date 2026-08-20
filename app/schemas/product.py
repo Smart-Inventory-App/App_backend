@@ -38,6 +38,19 @@ class ProductResponse(BaseModel):
     ubicacion: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    merged: bool = False
 
     class Config:
         from_attributes = True
+
+
+class ProductSuggestion(BaseModel):
+    nombre: str
+    marca: Optional[str] = None
+    categoria: str
+    ubicacion: Optional[str] = None
+
+
+class ProductDefaults(BaseModel):
+    last_categoria: Optional[str] = None
+    last_ubicacion: Optional[str] = None

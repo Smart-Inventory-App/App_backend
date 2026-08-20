@@ -1,14 +1,22 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.product import Product
+from app.models.profile import UserProfile
 from app.models.user import AuthUser
-from app.schemas.product import ProductCreate, ProductUpdate, ProductResponse
+from app.schemas.product import (
+    ProductCreate,
+    ProductDefaults,
+    ProductResponse,
+    ProductSuggestion,
+    ProductUpdate,
+)
 
 from app.core.firebase import send_push
 
@@ -23,6 +31,28 @@ def _get_user_product(product_id: int, user_id: str, db: Session) -> Product:
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
     return product
+
+
+def _get_or_create_profile(user_id: str, db: Session) -> UserProfile:
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+    if not profile:
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+    return profile
+
+
+def _find_matching_product(user_id: str, nombre: str, vencimiento, db: Session) -> Optional[Product]:
+    query = db.query(Product).filter(
+        Product.user_id == user_id,
+        func.lower(func.trim(Product.nombre)) == nombre.strip().lower(),
+    )
+    if vencimiento is None:
+        query = query.filter(Product.vencimiento.is_(None))
+    else:
+        query = query.filter(Product.vencimiento == vencimiento)
+    return query.first()
 
 def _get_user(user_id: int, db: Session) -> AuthUser:
     user = db.query(AuthUser).filter(
@@ -113,13 +143,71 @@ async def get_filter_options(
     return {"categorias": sorted(categorias), "ubicaciones": sorted(ubicaciones)}
 
 
+@router.get("/suggest", response_model=list[ProductSuggestion])
+async def suggest_products(
+    q: str = Query(..., min_length=1),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id = current_user["sub"]
+    rows = (
+        db.query(Product)
+        .filter(Product.user_id == user_id, Product.nombre.ilike(f"%{q}%"))
+        .order_by(Product.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    seen: set[str] = set()
+    suggestions: list[ProductSuggestion] = []
+    for p in rows:
+        key = p.nombre.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        suggestions.append(
+            ProductSuggestion(nombre=p.nombre, marca=p.marca, categoria=p.categoria, ubicacion=p.ubicacion)
+        )
+        if len(suggestions) >= 8:
+            break
+    return suggestions
+
+
+@router.get("/defaults", response_model=ProductDefaults)
+async def get_defaults(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    profile = db.query(UserProfile).filter(UserProfile.user_id == current_user["sub"]).first()
+    if not profile:
+        return ProductDefaults()
+    return ProductDefaults(last_categoria=profile.last_categoria, last_ubicacion=profile.last_ubicacion)
+
+
 @router.post("/", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 async def create_product(
     data: ProductCreate,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    product = Product(user_id=current_user["sub"], **data.model_dump())
+    user_id = current_user["sub"]
+
+    profile = _get_or_create_profile(user_id, db)
+    profile.last_categoria = data.categoria
+    profile.last_ubicacion = data.ubicacion
+    db.commit()
+
+    existing = _find_matching_product(user_id, data.nombre, data.vencimiento, db)
+    if existing:
+        existing.stock += data.stock
+        try:
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+        db.refresh(existing)
+        return ProductResponse.model_validate(existing, from_attributes=True).model_copy(update={"merged": True})
+
+    product = Product(user_id=user_id, **data.model_dump())
     db.add(product)
     try:
         db.commit()
