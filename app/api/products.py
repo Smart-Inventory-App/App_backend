@@ -43,7 +43,9 @@ def _get_or_create_profile(user_id: str, db: Session) -> UserProfile:
     return profile
 
 
-def _find_matching_product(user_id: str, nombre: str, vencimiento, db: Session) -> Optional[Product]:
+def _find_matching_product(
+    user_id: str, nombre: str, marca: Optional[str], vencimiento, db: Session
+) -> Optional[Product]:
     query = db.query(Product).filter(
         Product.user_id == user_id,
         func.lower(func.trim(Product.nombre)) == nombre.strip().lower(),
@@ -52,6 +54,11 @@ def _find_matching_product(user_id: str, nombre: str, vencimiento, db: Session) 
         query = query.filter(Product.vencimiento.is_(None))
     else:
         query = query.filter(Product.vencimiento == vencimiento)
+    marca_norm = marca.strip().lower() if marca else None
+    if marca_norm is None:
+        query = query.filter(Product.marca.is_(None))
+    else:
+        query = query.filter(func.lower(func.trim(Product.marca)) == marca_norm)
     return query.first()
 
 def _get_user(user_id: int, db: Session) -> AuthUser:
@@ -140,7 +147,11 @@ async def get_filter_options(
         row[0] for row in base.with_entities(Product.ubicacion).distinct().all()
         if row[0]
     ]
-    return {"categorias": sorted(categorias), "ubicaciones": sorted(ubicaciones)}
+    marcas = [
+        row[0] for row in base.with_entities(Product.marca).distinct().all()
+        if row[0]
+    ]
+    return {"categorias": sorted(categorias), "ubicaciones": sorted(ubicaciones), "marcas": sorted(marcas)}
 
 
 @router.get("/suggest", response_model=list[ProductSuggestion])
@@ -196,7 +207,7 @@ async def create_product(
     profile.last_ubicacion = data.ubicacion
     db.commit()
 
-    existing = _find_matching_product(user_id, data.nombre, data.vencimiento, db)
+    existing = _find_matching_product(user_id, data.nombre, data.marca, data.vencimiento, db)
     if existing:
         existing.stock += data.stock
         try:
