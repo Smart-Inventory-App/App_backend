@@ -45,4 +45,5 @@ volumes:
 
 networks:
   tpp-net:
+    external: true
     name: tpp-net
