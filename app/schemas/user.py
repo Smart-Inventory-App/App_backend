@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
 from typing import Optional
 
@@ -58,12 +58,16 @@ class ProfileResponse(BaseModel):
     username: Optional[str] = None
     firstName: Optional[str] = None
     lastName: Optional[str] = None
+    lowStockThreshold: int
+    expiryDaysThreshold: int
 
 
 class ProfileUpdate(BaseModel):
     firstName: str
     lastName: str
     username: Optional[str] = None
+    lowStockThreshold: Optional[int] = Field(None, gt=0)
+    expiryDaysThreshold: Optional[int] = Field(None, gt=0)
 
 
 # Keep legacy schemas so existing code that imports them doesn't break

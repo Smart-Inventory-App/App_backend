@@ -1,16 +1,21 @@
 """Add consumption_events table
 
-Revision ID: f5a6b7c8d9e0
-Revises: e4f5a6b7c8d9
+Revision ID: 1a2b3c4d5e6f
+Revises: f5a6b7c8d9e0
 Create Date: 2026-07-25 00:00:00.000000
+
+Nota: esta migración originalmente compartía el revision id "f5a6b7c8d9e0" con
+"f5a6b7c8d9e0_add_user_profile_defaults.py" (colisión accidental al elegir el
+próximo id a mano). Como esa otra migración ya se había aplicado en la base
+compartida y esta no, se le asignó un id nuevo y se la encadenó después.
 """
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "f5a6b7c8d9e0"
-down_revision: Union[str, None] = "e4f5a6b7c8d9"
+revision: str = "1a2b3c4d5e6f"
+down_revision: Union[str, None] = "f5a6b7c8d9e0"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

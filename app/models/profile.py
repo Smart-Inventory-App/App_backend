@@ -1,5 +1,8 @@
-from sqlalchemy import Column, String, DateTime, func
+from sqlalchemy import Column, DateTime, Integer, String, func
 from app.core.database import Base
+
+DEFAULT_STOCK_MINIMO = 10
+DEFAULT_DIAS_ALERTA_VENCIMIENTO = 7
 
 
 class UserProfile(Base):
@@ -11,4 +14,6 @@ class UserProfile(Base):
     username = Column(String, nullable=True)
     last_categoria = Column(String, nullable=True)
     last_ubicacion = Column(String, nullable=True)
+    stock_minimo = Column(Integer, nullable=True)
+    dias_alerta_vencimiento = Column(Integer, nullable=True)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

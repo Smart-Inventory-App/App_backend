@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.profile import UserProfile
+from app.models.profile import DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_STOCK_MINIMO, UserProfile
 from app.schemas.user import ProfileResponse, ProfileUpdate
 
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -19,6 +19,18 @@ def _get_or_create(user_id: str, db: Session) -> UserProfile:
     return profile
 
 
+def _to_response(user_id: str, email: str | None, profile: UserProfile) -> ProfileResponse:
+    return ProfileResponse(
+        sub=user_id,
+        email=email,
+        username=profile.username,
+        firstName=profile.first_name,
+        lastName=profile.last_name,
+        lowStockThreshold=profile.stock_minimo or DEFAULT_STOCK_MINIMO,
+        expiryDaysThreshold=profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO,
+    )
+
+
 @router.get("/", response_model=ProfileResponse)
 async def get_profile(
     current_user: dict = Depends(get_current_user),
@@ -26,13 +38,7 @@ async def get_profile(
 ):
     user_id = current_user["sub"]
     profile = _get_or_create(user_id, db)
-    return ProfileResponse(
-        sub=user_id,
-        email=current_user.get("email"),
-        username=profile.username,
-        firstName=profile.first_name,
-        lastName=profile.last_name,
-    )
+    return _to_response(user_id, current_user.get("email"), profile)
 
 
 @router.put("/", response_model=ProfileResponse)
@@ -46,12 +52,10 @@ async def update_profile(
     profile.first_name = data.firstName
     profile.last_name = data.lastName
     profile.username = data.username
+    if data.lowStockThreshold is not None:
+        profile.stock_minimo = data.lowStockThreshold
+    if data.expiryDaysThreshold is not None:
+        profile.dias_alerta_vencimiento = data.expiryDaysThreshold
     db.commit()
     db.refresh(profile)
-    return ProfileResponse(
-        sub=user_id,
-        email=current_user.get("email"),
-        username=profile.username,
-        firstName=profile.first_name,
-        lastName=profile.last_name,
-    )
+    return _to_response(user_id, current_user.get("email"), profile)

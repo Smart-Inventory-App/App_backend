@@ -7,8 +7,9 @@ from typing import Optional
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.models.activity_log import AdminActivityLog
 from app.models.product import Product
-from app.models.profile import UserProfile
+from app.models.profile import DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_STOCK_MINIMO, UserProfile
 from app.models.user import AuthUser
 from app.schemas.product import (
     ProductCreate,
@@ -61,6 +62,26 @@ def _find_matching_product(
         query = query.filter(func.lower(func.trim(Product.marca)) == marca_norm)
     return query.first()
 
+def _log_activity(
+    db: Session,
+    event_type: str,
+    actor_email: Optional[str],
+    target_user_id: str,
+    target_email: Optional[str],
+    description: str,
+) -> None:
+    db.add(
+        AdminActivityLog(
+            event_type=event_type,
+            actor_email=actor_email,
+            target_user_id=target_user_id,
+            target_email=target_email,
+            description=description,
+        )
+    )
+    db.commit()
+
+
 def _get_user(user_id: int, db: Session) -> AuthUser:
     user = db.query(AuthUser).filter(
         AuthUser.id == user_id
@@ -81,9 +102,9 @@ def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
     return send_push(token, message_title, message_body)
     # guardar alerta en db
 
-def _check_product_state(product: Product, user: AuthUser):
-    stock_warning = 10 # valor por defecto
-    expirancy_warning = 30
+def _check_product_state(product: Product, user: AuthUser, profile: UserProfile):
+    stock_warning = profile.stock_minimo or DEFAULT_STOCK_MINIMO
+    expirancy_warning = profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
     if product.stock < stock_warning:
         response = _notificate_low_stock(user.firebase_token, product)
         print("\n\nse envio la notificacion de stock: "+response+"\n\n")
@@ -201,6 +222,7 @@ async def create_product(
     db: Session = Depends(get_db),
 ):
     user_id = current_user["sub"]
+    actor_email = current_user.get("email")
 
     profile = _get_or_create_profile(user_id, db)
     profile.last_categoria = data.categoria
@@ -216,6 +238,10 @@ async def create_product(
             db.rollback()
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
         db.refresh(existing)
+        _log_activity(
+            db, "product_updated", actor_email, user_id, actor_email,
+            f"{actor_email or user_id} sumó {data.stock} unidades a \"{existing.nombre}\" (stock: {existing.stock})",
+        )
         return ProductResponse.model_validate(existing, from_attributes=True).model_copy(update={"merged": True})
 
     product = Product(user_id=user_id, **data.model_dump())
@@ -226,6 +252,10 @@ async def create_product(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     db.refresh(product)
+    _log_activity(
+        db, "product_created", actor_email, user_id, actor_email,
+        f"{actor_email or user_id} cargó \"{product.nombre}\" (stock: {product.stock}) desde la app",
+    )
     return product
 
 
@@ -245,13 +275,22 @@ async def update_product(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    product = _get_user_product(product_id, current_user["sub"], db)
+    user_id = current_user["sub"]
+    actor_email = current_user.get("email")
+    product = _get_user_product(product_id, user_id, db)
+    changed_fields = list(data.model_dump(exclude_unset=True).keys())
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(product, field, value)
-    user = _get_user(current_user["sub"], db)
-    _check_product_state(product, user)
+    user = _get_user(user_id, db)
+    profile = _get_or_create_profile(user_id, db)
+    _check_product_state(product, user, profile)
     db.commit()
     db.refresh(product)
+    if changed_fields:
+        _log_activity(
+            db, "product_updated", actor_email, user_id, actor_email,
+            f"{actor_email or user_id} editó \"{product.nombre}\" ({', '.join(changed_fields)}) desde la app",
+        )
     return product
 
 
@@ -261,6 +300,13 @@ async def delete_product(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    product = _get_user_product(product_id, current_user["sub"], db)
+    user_id = current_user["sub"]
+    actor_email = current_user.get("email")
+    product = _get_user_product(product_id, user_id, db)
+    nombre = product.nombre
     db.delete(product)
     db.commit()
+    _log_activity(
+        db, "product_deleted", actor_email, user_id, actor_email,
+        f"{actor_email or user_id} eliminó \"{nombre}\" desde la app",
+    )
