@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = "noreply@smartinventory.com"
 
+    # Internal service auth (used by ML service)
+    INTERNAL_SERVICE_TOKEN: str = "change-this-internal-token"
+
     # Firebase
     FIREBASE_CREDENTIALS: str
 

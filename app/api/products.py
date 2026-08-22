@@ -1,13 +1,15 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Literal, Optional
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.activity_log import AdminActivityLog
+from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
 from app.models.profile import DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_STOCK_MINIMO, UserProfile
 from app.models.user import AuthUser
@@ -20,6 +22,11 @@ from app.schemas.product import (
 )
 
 from app.core.firebase import send_push
+
+
+class EventRequest(BaseModel):
+    event_type: Literal["consumed", "expired"]
+    quantity: int
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -259,6 +266,23 @@ async def create_product(
     return product
 
 
+@router.get("/expired", response_model=list[ProductResponse])
+async def get_expired_products(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    today = date.today()
+    return (
+        db.query(Product)
+        .filter(
+            Product.user_id == current_user["sub"],
+            Product.vencimiento < today,
+            Product.stock > 0,
+        )
+        .all()
+    )
+
+
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product(
     product_id: int,
@@ -278,6 +302,14 @@ async def update_product(
     user_id = current_user["sub"]
     actor_email = current_user.get("email")
     product = _get_user_product(product_id, user_id, db)
+    new_stock = data.model_dump(exclude_unset=True).get("stock")
+    if new_stock is not None and new_stock < product.stock:
+        db.add(ConsumptionEvent(
+            product_id=product.id,
+            user_id=product.user_id,
+            quantity=product.stock - new_stock,
+            event_type="consumed",
+        ))
     changed_fields = list(data.model_dump(exclude_unset=True).keys())
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(product, field, value)
@@ -292,6 +324,49 @@ async def update_product(
             f"{actor_email or user_id} editó \"{product.nombre}\" ({', '.join(changed_fields)}) desde la app",
         )
     return product
+
+
+@router.get("/{product_id}/consumption")
+async def get_consumption_history(
+    product_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_user_product(product_id, current_user["sub"], db)
+    events = (
+        db.query(ConsumptionEvent)
+        .filter(ConsumptionEvent.product_id == product_id)
+        .order_by(ConsumptionEvent.consumed_at.asc())
+        .all()
+    )
+    return [
+        {"id": e.id, "quantity": e.quantity, "event_type": e.event_type, "consumed_at": e.consumed_at}
+        for e in events
+    ]
+
+
+@router.post("/{product_id}/events", status_code=status.HTTP_201_CREATED)
+async def register_event(
+    product_id: int,
+    data: EventRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    product = _get_user_product(product_id, current_user["sub"], db)
+    if data.quantity <= 0 or data.quantity > product.stock:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cantidad inválida",
+        )
+    db.add(ConsumptionEvent(
+        product_id=product.id,
+        user_id=product.user_id,
+        quantity=data.quantity,
+        event_type=data.event_type,
+    ))
+    product.stock = max(0, product.stock - data.quantity)
+    db.commit()
+    return {"event_type": data.event_type, "quantity": data.quantity, "remaining_stock": product.stock}
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
