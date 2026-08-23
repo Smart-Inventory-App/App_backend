@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.profile import DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_STOCK_MINIMO, UserProfile
-from app.schemas.user import ProfileResponse, ProfileUpdate
+from app.schemas.user import NotificationToken, ProfileResponse, ProfileUpdate
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -59,3 +59,20 @@ async def update_profile(
     db.commit()
     db.refresh(profile)
     return _to_response(user_id, current_user.get("email"), profile)
+
+
+@router.post("/register_notification_token", status_code=200)
+async def register_token(
+    data: NotificationToken,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    user_id = current_user["sub"]
+    profile = _get_or_create(user_id, db)
+    if not profile:
+        return {"message": "User not found"}
+    profile.notification_token = data.token
+    db.commit()
+    db.refresh(profile)
+    print(f"Registered notification token for user {user_id}: {data.token}")
+    return {"message": "Token registered successfully"}

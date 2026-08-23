@@ -69,6 +69,8 @@ class ProfileUpdate(BaseModel):
     lowStockThreshold: Optional[int] = Field(None, gt=0)
     expiryDaysThreshold: Optional[int] = Field(None, gt=0)
 
+class NotificationToken(BaseModel):
+    token: str
 
 # Keep legacy schemas so existing code that imports them doesn't break
 class UserBase(BaseModel):

@@ -18,11 +18,11 @@ from app.schemas.product import (
     ProductSuggestion,
     ProductUpdate,
 )
-
-from app.core.firebase import send_push
+from app.services.notifications import NotificationService
 
 router = APIRouter(prefix="/products", tags=["products"])
 
+notification_service = NotificationService(api_url=settings.NOTIFICATION_SERVICE_URL)
 
 def _get_user_product(product_id: int, user_id: str, db: Session) -> Product:
     product = db.query(Product).filter(
@@ -93,26 +93,27 @@ def _get_user(user_id: int, db: Session) -> AuthUser:
 def _notificate_low_stock(token: str, product: Product):
     message_title = "Stock Bajo"
     message_body = "Hay pocas unidades del producto "+product.nombre+" ("+str(product.stock)+" unidades)."
-    return send_push(token, message_title, message_body)
+    # return send_push(token, message_title, message_body)
     # guardar alerta en db
+    return notification_service.send_notification(token, message_title, message_body, "")
 
 def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
     message_title = "Producto próximo a vencerse"
     message_body = "El producto "+product.nombre+" vence en "+str(expirancy_days)+"dias."
-    return send_push(token, message_title, message_body)
+    return notification_service.send_notification(token, message_title, message_body, "")
     # guardar alerta en db
 
 def _check_product_state(product: Product, user: AuthUser, profile: UserProfile):
     stock_warning = profile.stock_minimo or DEFAULT_STOCK_MINIMO
     expirancy_warning = profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
     if product.stock < stock_warning:
-        response = _notificate_low_stock(user.firebase_token, product)
-        print("\n\nse envio la notificacion de stock: "+response+"\n\n")
+        response, _ = _notificate_low_stock(user.firebase_token, product)
+        print("\n\nse envio la notificacion de stock: "+str(response)+"\n\n")
     if product.vencimiento != None:
         expirancy_days = (product.vencimiento - date.today()).days
         if expirancy_days < expirancy_warning:
-            response = _notificate_expirancy(user.firebase_token, product, expirancy_days)
-            print("\n\nse envio la notificacion de vencimiento: "+response+"\n\n")
+            response, _ = _notificate_expirancy(user.firebase_token, product, expirancy_days)
+            print("\n\nse envio la notificacion de vencimiento: "+str(response)+"\n\n")
 
 
 

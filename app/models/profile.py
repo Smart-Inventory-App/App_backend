@@ -16,4 +16,5 @@ class UserProfile(Base):
     last_ubicacion = Column(String, nullable=True)
     stock_minimo = Column(Integer, nullable=True)
     dias_alerta_vencimiento = Column(Integer, nullable=True)
+    notification_token = Column(String, nullable=True)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
