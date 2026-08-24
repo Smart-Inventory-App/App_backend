@@ -1,9 +1,13 @@
+import subprocess
 import uvicorn
 from app.main import app
 from app.core.config import settings
 from app.core.database import Base, engine
 
-# Create database tables
+# Run pending Alembic migrations (adds new columns to existing tables)
+subprocess.run(["alembic", "upgrade", "head"], check=True)
+
+# Create any new tables not covered by migrations
 Base.metadata.create_all(bind=engine)
 
 if __name__ == "__main__":
