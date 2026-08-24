@@ -1,6 +1,6 @@
 """
 Seed de datos de consumo para entrenar el modelo ML.
-Crea 6 productos ficticios con 60 dias de historial de consumo (12 eventos c/u).
+Crea 6 productos ficticios con 12 eventos cada uno separados por 6 dias (span ~66 dias >= 56 requerido).
 Uso: python seed_ml_data.py
 """
 import random
@@ -24,6 +24,18 @@ PRODUCTS = [
 def main():
     db = SessionLocal()
     try:
+        # Limpiar eventos existentes del seed user para re-insertar con span correcto
+        existing_products = db.query(Product).filter(
+            Product.user_id == SEED_USER_ID
+        ).all()
+        if existing_products:
+            pids = [p.id for p in existing_products]
+            deleted = db.query(ConsumptionEvent).filter(
+                ConsumptionEvent.product_id.in_(pids)
+            ).delete(synchronize_session=False)
+            db.commit()
+            print(f"  Limpiados {deleted} eventos existentes del seed.")
+
         # Crear productos si no existen
         product_ids = []
         for p in PRODUCTS:
@@ -43,20 +55,15 @@ def main():
 
         db.commit()
 
-        # Insertar eventos de consumo: 12 eventos por producto en 60 dias
+        # Insertar eventos: 12 por producto, intervalo 6 dias => span = 66 dias (>= 56 requerido)
         now = datetime.now(timezone.utc)
         events_added = 0
         for pid in product_ids:
-            # Verificar si ya tiene eventos suficientes
-            existing_count = db.query(ConsumptionEvent).filter(
-                ConsumptionEvent.product_id == pid
-            ).count()
-            if existing_count >= 12:
-                print(f"  Producto {pid}: ya tiene {existing_count} eventos, skip")
-                continue
-
             for i in range(12):
-                days_ago = 60 - (i * 5) + random.randint(-1, 1)
+                # i=0 -> 66 dias atras (mas viejo), i=11 -> ~0 dias atras (mas nuevo)
+                # Jitter solo en eventos intermedios para no afectar el span minimo
+                jitter = random.randint(-1, 1) if 0 < i < 11 else 0
+                days_ago = 66 - (i * 6) + jitter
                 qty = random.randint(1, 4)
                 event = ConsumptionEvent(
                     product_id=pid,
@@ -70,7 +77,8 @@ def main():
 
         db.commit()
         print(f"\nSeed completado: {len(product_ids)} productos, {events_added} eventos nuevos.")
-        print("Ya podés entrenar el modelo desde el BackOffice.")
+        print("Span por producto: ~66 dias (minimo requerido: 56 dias). Todos deberan calificar.")
+        print("Ya podes entrenar el modelo desde el BackOffice.")
 
     finally:
         db.close()
