@@ -392,7 +392,8 @@ async def register_event(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    product = _get_user_product(product_id, current_user["sub"], db)
+    user_id = current_user["sub"]
+    product = _get_user_product(product_id, user_id, db)
     if data.quantity <= 0 or data.quantity > product.stock:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -406,6 +407,10 @@ async def register_event(
     ))
     product.stock = max(0, product.stock - data.quantity)
     db.commit()
+    db.refresh(product)
+    user = _get_user(user_id, db)
+    profile = _get_or_create_profile(user_id, db)
+    await _check_product_state(product, user, profile, db)
     return {"event_type": data.event_type, "quantity": data.quantity, "remaining_stock": product.stock}
 
 

@@ -1,13 +1,31 @@
+from contextlib import asynccontextmanager
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.core.config import settings
 from app.api import transactions, health, internal, products, profile
+from app.services.alert_job import run_daily_coverage_check
+
+_scheduler = AsyncIOScheduler()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _scheduler.add_job(run_daily_coverage_check, CronTrigger(hour=8, minute=0, timezone="UTC"))
+    _scheduler.start()
+    yield
+    _scheduler.shutdown()
+
 
 # Create FastAPI app
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
     debug=settings.DEBUG,
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
