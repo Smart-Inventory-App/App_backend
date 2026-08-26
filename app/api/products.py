@@ -13,7 +13,7 @@ from app.core.security import get_current_user
 from app.models.activity_log import AdminActivityLog
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
-from app.models.profile import DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
+from app.models.profile import DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, UserProfile
 from app.models.user import AuthUser
 from app.schemas.product import (
     ProductCreate,
@@ -107,6 +107,20 @@ def _notificate_low_coverage(token: str, product: Product, days: int):
         f"{product.nombre} se agotará en aproximadamente {days} {label}.",
     )
 
+def _notificate_overstock(token: str, product: Product, days: int):
+    send_push(
+        token,
+        "Compraste más de lo necesario",
+        f"Tenés {product.nombre} para aproximadamente {days} días. Quizás compraste de más.",
+    )
+
+def _notificate_slow_pace(token: str, product: Product, days_until_expiry: int, units_wasted: int):
+    send_push(
+        token,
+        "Riesgo de vencimiento por bajo consumo",
+        f"Al ritmo actual, {units_wasted} unidad{'es' if units_wasted != 1 else ''} de {product.nombre} vencer{'án' if units_wasted != 1 else 'á'} en {days_until_expiry} días.",
+    )
+
 def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
     send_push(
         token,
@@ -114,7 +128,13 @@ def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
         f"El producto {product.nombre} vence en {expirancy_days} días.",
     )
 
-async def _check_product_state(product: Product, user: AuthUser, profile: UserProfile, db: Session):
+async def _check_product_state(
+    product: Product, user: AuthUser, profile: UserProfile, db: Session
+) -> dict | None:
+    """
+    Evalúa el estado de un producto y envía alertas según corresponda.
+    Retorna el resultado ML (daily_rate, days_until_stockout, stage) o None.
+    """
     # Alerta de vencimiento (estática — no requiere ML)
     expirancy_warning = profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
     if product.vencimiento is not None:
@@ -122,9 +142,8 @@ async def _check_product_state(product: Product, user: AuthUser, profile: UserPr
         if expirancy_days < expirancy_warning:
             _notificate_expirancy(user.firebase_token, product, expirancy_days)
 
-    # Alerta de cobertura (dinámica — basada en predicción ML)
     if not settings.ML_SERVICE_URL:
-        return
+        return None
     coverage_threshold = profile.stock_minimo or DEFAULT_COVERAGE_DAYS
     try:
         events = (
@@ -155,11 +174,31 @@ async def _check_product_state(product: Product, user: AuthUser, profile: UserPr
                 headers={"X-Internal-Token": settings.INTERNAL_SERVICE_TOKEN},
             )
         if r.status_code == 200:
-            days_until_stockout = r.json().get("days_until_stockout")
+            result = r.json()
+            days_until_stockout = result.get("days_until_stockout")
+            daily_rate = result.get("daily_rate")
+
+            # Alerta de bajo stock
             if days_until_stockout is not None and days_until_stockout < coverage_threshold:
                 _notificate_low_coverage(user.firebase_token, product, days_until_stockout)
+
+            # Alerta de ritmo lento vs. vencimiento
+            if (
+                product.vencimiento is not None
+                and days_until_stockout is not None
+                and daily_rate is not None
+                and daily_rate > 0
+            ):
+                days_until_expiry = (product.vencimiento - date.today()).days
+                if 0 < days_until_expiry < days_until_stockout:
+                    units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
+                    if units_wasted > 0:
+                        _notificate_slow_pace(user.firebase_token, product, days_until_expiry, units_wasted)
+
+            return result
     except Exception:
-        pass  # ML no disponible, se omite la alerta de cobertura
+        pass
+    return None
 
 
 
@@ -279,6 +318,12 @@ async def create_product(
     existing = _find_matching_product(user_id, data.nombre, data.marca, data.vencimiento, db)
     if existing:
         existing.stock += data.stock
+        db.add(ConsumptionEvent(
+            product_id=existing.id,
+            user_id=user_id,
+            quantity=data.stock,
+            event_type="restocked",
+        ))
         try:
             db.commit()
         except Exception as e:
@@ -289,6 +334,13 @@ async def create_product(
             db, "product_updated", actor_email, user_id, actor_email,
             f"{actor_email or user_id} sumó {data.stock} unidades a \"{existing.nombre}\" (stock: {existing.stock})",
         )
+        user = _get_user(user_id, db)
+        result = await _check_product_state(existing, user, profile, db)
+        if result:
+            days_until_stockout = result.get("days_until_stockout")
+            overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * (profile.stock_minimo or DEFAULT_COVERAGE_DAYS))
+            if days_until_stockout is not None and days_until_stockout > overstock_threshold:
+                _notificate_overstock(user.firebase_token, existing, days_until_stockout)
         return ProductResponse.model_validate(existing, from_attributes=True).model_copy(update={"merged": True})
 
     product = Product(user_id=user_id, **data.model_dump())
@@ -342,20 +394,41 @@ async def update_product(
     user_id = current_user["sub"]
     actor_email = current_user.get("email")
     product = _get_user_product(product_id, user_id, db)
-    new_stock = data.model_dump(exclude_unset=True).get("stock")
-    if new_stock is not None and new_stock < product.stock:
+
+    update_dict = data.model_dump(exclude_unset=True)
+    new_stock_value = update_dict.get("stock")
+    old_stock = product.stock
+    stock_increased = new_stock_value is not None and new_stock_value > old_stock
+
+    if new_stock_value is not None and new_stock_value < old_stock:
         db.add(ConsumptionEvent(
             product_id=product.id,
             user_id=product.user_id,
-            quantity=product.stock - new_stock,
+            quantity=old_stock - new_stock_value,
             event_type="consumed",
         ))
-    changed_fields = list(data.model_dump(exclude_unset=True).keys())
-    for field, value in data.model_dump(exclude_unset=True).items():
+    elif stock_increased:
+        db.add(ConsumptionEvent(
+            product_id=product.id,
+            user_id=product.user_id,
+            quantity=new_stock_value - old_stock,
+            event_type="restocked",
+        ))
+
+    changed_fields = list(update_dict.keys())
+    for field, value in update_dict.items():
         setattr(product, field, value)
+
     user = _get_user(user_id, db)
     profile = _get_or_create_profile(user_id, db)
-    await _check_product_state(product, user, profile, db)
+    result = await _check_product_state(product, user, profile, db)
+
+    if result and stock_increased:
+        days_until_stockout = result.get("days_until_stockout")
+        overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * (profile.stock_minimo or DEFAULT_COVERAGE_DAYS))
+        if days_until_stockout is not None and days_until_stockout > overstock_threshold:
+            _notificate_overstock(user.firebase_token, product, days_until_stockout)
+
     db.commit()
     db.refresh(product)
     if changed_fields:

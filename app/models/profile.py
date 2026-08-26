@@ -5,6 +5,7 @@ DEFAULT_COVERAGE_DAYS = 7          # días de cobertura mínimos antes de alerta
 DEFAULT_STOCK_MINIMO = DEFAULT_COVERAGE_DAYS  # alias para compatibilidad
 DEFAULT_DIAS_ALERTA_VENCIMIENTO = 7
 DEFAULT_ALERT_CHECK_HOUR = 8       # hora UTC del chequeo diario de alertas
+DEFAULT_OVERSTOCK_DAYS = 60        # días de cobertura a partir de los cuales se alerta overstock
 
 
 class UserProfile(Base):

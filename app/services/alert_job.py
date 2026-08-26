@@ -12,13 +12,14 @@ from app.core.database import SessionLocal
 from app.core.firebase import send_push
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
-from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
+from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, UserProfile
 from app.models.user import AuthUser
 
 logger = logging.getLogger(__name__)
 
 
-async def _ml_days_until_stockout(events: list, product_data: dict) -> int | None:
+async def _ml_predict(events: list, product_data: dict) -> dict | None:
+    """Llama al ML y retorna {daily_rate, days_until_stockout, stage} o None."""
     if not settings.ML_SERVICE_URL:
         return None
     events_payload = [
@@ -38,7 +39,7 @@ async def _ml_days_until_stockout(events: list, product_data: dict) -> int | Non
                 headers={"X-Internal-Token": settings.INTERNAL_SERVICE_TOKEN},
             )
         if r.status_code == 200:
-            return r.json().get("days_until_stockout")
+            return r.json()
     except Exception:
         pass
     return None
@@ -85,7 +86,7 @@ async def run_daily_coverage_check() -> None:
                         )
                         alerts_sent += 1
 
-                # Alerta de cobertura de stock (ML)
+                # Alertas basadas en ML
                 events = (
                     db.query(ConsumptionEvent)
                     .filter(ConsumptionEvent.product_id == product.id)
@@ -98,15 +99,38 @@ async def run_daily_coverage_check() -> None:
                     "categoria": product.categoria,
                     "nombre": product.nombre,
                 }
-                days_until_stockout = await _ml_days_until_stockout(events, product_data)
-                if days_until_stockout is not None and days_until_stockout < coverage_threshold:
-                    label = "día" if days_until_stockout == 1 else "días"
-                    send_push(
-                        user.firebase_token,
-                        "Stock por agotarse",
-                        f"{product.nombre} se agotará en aproximadamente {days_until_stockout} {label}.",
-                    )
-                    alerts_sent += 1
+                ml_result = await _ml_predict(events, product_data)
+                if ml_result:
+                    days_until_stockout = ml_result.get("days_until_stockout")
+                    daily_rate = ml_result.get("daily_rate")
+
+                    # Alerta de bajo stock
+                    if days_until_stockout is not None and days_until_stockout < coverage_threshold:
+                        label = "día" if days_until_stockout == 1 else "días"
+                        send_push(
+                            user.firebase_token,
+                            "Stock por agotarse",
+                            f"{product.nombre} se agotará en aproximadamente {days_until_stockout} {label}.",
+                        )
+                        alerts_sent += 1
+
+                    # Alerta de ritmo lento vs. vencimiento
+                    if (
+                        product.vencimiento is not None
+                        and days_until_stockout is not None
+                        and daily_rate is not None
+                        and daily_rate > 0
+                    ):
+                        days_until_expiry = (product.vencimiento - date.today()).days
+                        if 0 < days_until_expiry < days_until_stockout:
+                            units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
+                            if units_wasted > 0:
+                                send_push(
+                                    user.firebase_token,
+                                    "Riesgo de vencimiento por bajo consumo",
+                                    f"Al ritmo actual, {units_wasted} unidad{'es' if units_wasted != 1 else ''} de {product.nombre} vencer{'án' if units_wasted != 1 else 'á'} en {days_until_expiry} días.",
+                                )
+                                alerts_sent += 1
 
         logger.info(f"Chequeo diario completado: {alerts_sent} alertas enviadas.")
     except Exception:
