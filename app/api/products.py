@@ -1,17 +1,19 @@
 from datetime import date
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Literal, Optional
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.activity_log import AdminActivityLog
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
-from app.models.profile import DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_STOCK_MINIMO, UserProfile
+from app.models.profile import DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
 from app.models.user import AuthUser
 from app.schemas.product import (
     ProductCreate,
@@ -97,29 +99,67 @@ def _get_user(user_id: int, db: Session) -> AuthUser:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
     return user
 
-def _notificate_low_stock(token: str, product: Product):
-    message_title = "Stock Bajo"
-    message_body = "Hay pocas unidades del producto "+product.nombre+" ("+str(product.stock)+" unidades)."
-    return send_push(token, message_title, message_body)
-    # guardar alerta en db
+def _notificate_low_coverage(token: str, product: Product, days: int):
+    label = "día" if days == 1 else "días"
+    send_push(
+        token,
+        "Stock por agotarse",
+        f"{product.nombre} se agotará en aproximadamente {days} {label}.",
+    )
 
 def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
-    message_title = "Producto próximo a vencerse"
-    message_body = "El producto "+product.nombre+" vence en "+str(expirancy_days)+"dias."
-    return send_push(token, message_title, message_body)
-    # guardar alerta en db
+    send_push(
+        token,
+        "Producto próximo a vencerse",
+        f"El producto {product.nombre} vence en {expirancy_days} días.",
+    )
 
-def _check_product_state(product: Product, user: AuthUser, profile: UserProfile):
-    stock_warning = profile.stock_minimo or DEFAULT_STOCK_MINIMO
+async def _check_product_state(product: Product, user: AuthUser, profile: UserProfile, db: Session):
+    # Alerta de vencimiento (estática — no requiere ML)
     expirancy_warning = profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
-    if product.stock < stock_warning:
-        response = _notificate_low_stock(user.firebase_token, product)
-        print("\n\nse envio la notificacion de stock: "+response+"\n\n")
-    if product.vencimiento != None:
+    if product.vencimiento is not None:
         expirancy_days = (product.vencimiento - date.today()).days
         if expirancy_days < expirancy_warning:
-            response = _notificate_expirancy(user.firebase_token, product, expirancy_days)
-            print("\n\nse envio la notificacion de vencimiento: "+response+"\n\n")
+            _notificate_expirancy(user.firebase_token, product, expirancy_days)
+
+    # Alerta de cobertura (dinámica — basada en predicción ML)
+    if not settings.ML_SERVICE_URL:
+        return
+    coverage_threshold = profile.stock_minimo or DEFAULT_COVERAGE_DAYS
+    try:
+        events = (
+            db.query(ConsumptionEvent)
+            .filter(ConsumptionEvent.product_id == product.id)
+            .order_by(ConsumptionEvent.consumed_at.asc())
+            .all()
+        )
+        events_data = [
+            {
+                "quantity": e.quantity,
+                "event_type": e.event_type,
+                "consumed_at": e.consumed_at.isoformat(),
+                "product_id": e.product_id,
+            }
+            for e in events
+        ]
+        product_data = {
+            "id": product.id,
+            "stock": product.stock,
+            "categoria": product.categoria,
+            "nombre": product.nombre,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(
+                f"{settings.ML_SERVICE_URL}/models/predict-product",
+                json={"events": events_data, "product": product_data},
+                headers={"X-Internal-Token": settings.INTERNAL_SERVICE_TOKEN},
+            )
+        if r.status_code == 200:
+            days_until_stockout = r.json().get("days_until_stockout")
+            if days_until_stockout is not None and days_until_stockout < coverage_threshold:
+                _notificate_low_coverage(user.firebase_token, product, days_until_stockout)
+    except Exception:
+        pass  # ML no disponible, se omite la alerta de cobertura
 
 
 
@@ -315,7 +355,7 @@ async def update_product(
         setattr(product, field, value)
     user = _get_user(user_id, db)
     profile = _get_or_create_profile(user_id, db)
-    _check_product_state(product, user, profile)
+    await _check_product_state(product, user, profile, db)
     db.commit()
     db.refresh(product)
     if changed_fields:

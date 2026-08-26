@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Internal service auth (used by ML service)
     INTERNAL_SERVICE_TOKEN: str = "change-this-internal-token"
 
+    # ML service URL for smart alerts
+    ML_SERVICE_URL: str = ""
+
     # Firebase
     FIREBASE_CREDENTIALS: str
 

@@ -1,7 +1,8 @@
 from sqlalchemy import Column, DateTime, Integer, String, func
 from app.core.database import Base
 
-DEFAULT_STOCK_MINIMO = 10
+DEFAULT_COVERAGE_DAYS = 7          # días de cobertura mínimos antes de alertar (ML)
+DEFAULT_STOCK_MINIMO = DEFAULT_COVERAGE_DAYS  # alias para compatibilidad
 DEFAULT_DIAS_ALERTA_VENCIMIENTO = 7
 
 
