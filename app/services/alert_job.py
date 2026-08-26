@@ -1,10 +1,9 @@
 """
-Job diario que revisa la cobertura de stock de todos los productos
-y envía alertas push cuando el ML predice agotamiento inminente.
-Se ejecuta una vez por día a las 8:00 AM (UTC).
+Job que corre cada hora y envía alertas a los usuarios cuya hora de chequeo
+configurada coincide con la hora UTC actual.
 """
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 
 import httpx
 
@@ -13,7 +12,7 @@ from app.core.database import SessionLocal
 from app.core.firebase import send_push
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
-from app.models.profile import DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
+from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
 from app.models.user import AuthUser
 
 logger = logging.getLogger(__name__)
@@ -46,7 +45,8 @@ async def _ml_days_until_stockout(events: list, product_data: dict) -> int | Non
 
 
 async def run_daily_coverage_check() -> None:
-    logger.info("Iniciando chequeo diario de cobertura de stock...")
+    current_hour = datetime.now(timezone.utc).hour
+    logger.info(f"Chequeo de cobertura hora UTC={current_hour}...")
     db = SessionLocal()
     alerts_sent = 0
     try:
@@ -58,6 +58,12 @@ async def run_daily_coverage_check() -> None:
                 continue
 
             profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+
+            # Solo procesar usuarios cuya hora de chequeo coincide con la hora actual
+            user_check_hour = (profile.alert_check_hour if profile and profile.alert_check_hour is not None else DEFAULT_ALERT_CHECK_HOUR)
+            if user_check_hour != current_hour:
+                continue
+
             coverage_threshold = (profile.stock_minimo if profile else None) or DEFAULT_COVERAGE_DAYS
             expiry_threshold = (profile.dias_alerta_vencimiento if profile else None) or DEFAULT_DIAS_ALERTA_VENCIMIENTO
 

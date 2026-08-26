@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.profile import DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
+from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
 from app.schemas.user import ProfileResponse, ProfileUpdate
 
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -28,6 +28,7 @@ def _to_response(user_id: str, email: str | None, profile: UserProfile) -> Profi
         lastName=profile.last_name,
         coverageDaysThreshold=profile.stock_minimo or DEFAULT_COVERAGE_DAYS,
         expiryDaysThreshold=profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO,
+        alertCheckHour=profile.alert_check_hour if profile.alert_check_hour is not None else DEFAULT_ALERT_CHECK_HOUR,
     )
 
 
@@ -56,6 +57,8 @@ async def update_profile(
         profile.stock_minimo = data.coverageDaysThreshold
     if data.expiryDaysThreshold is not None:
         profile.dias_alerta_vencimiento = data.expiryDaysThreshold
+    if data.alertCheckHour is not None:
+        profile.alert_check_hour = data.alertCheckHour
     db.commit()
     db.refresh(profile)
     return _to_response(user_id, current_user.get("email"), profile)

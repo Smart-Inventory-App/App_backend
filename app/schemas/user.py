@@ -60,6 +60,7 @@ class ProfileResponse(BaseModel):
     lastName: Optional[str] = None
     coverageDaysThreshold: int
     expiryDaysThreshold: int
+    alertCheckHour: int
 
 
 class ProfileUpdate(BaseModel):
@@ -68,6 +69,7 @@ class ProfileUpdate(BaseModel):
     username: Optional[str] = None
     coverageDaysThreshold: Optional[int] = Field(None, gt=0)
     expiryDaysThreshold: Optional[int] = Field(None, gt=0)
+    alertCheckHour: Optional[int] = Field(None, ge=0, le=23)
 
 
 # Keep legacy schemas so existing code that imports them doesn't break

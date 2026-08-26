@@ -14,7 +14,8 @@ _scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _scheduler.add_job(run_daily_coverage_check, CronTrigger(hour=8, minute=0, timezone="UTC"))
+    # Corre cada hora en punto; el job internamente filtra usuarios según su hora configurada
+    _scheduler.add_job(run_daily_coverage_check, CronTrigger(minute=0, timezone="UTC"))
     _scheduler.start()
     yield
     _scheduler.shutdown()
