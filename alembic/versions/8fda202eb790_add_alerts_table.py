@@ -29,9 +29,9 @@ def upgrade() -> None:
            sa.ForeignKey("products.id", ondelete="CASCADE"),
            nullable=False),
         sa.Column("type", sa.String(), nullable=False),
-        sa.Column("critic", sa.Boolean(), nullable=False, default=False),
-        sa.Column("title", sa.String(), nullable=False),
-        sa.Column("body", sa.String(), nullable=False),
+        sa.Column("level", sa.String(), nullable=False),
+      #   sa.Column("title", sa.String(), nullable=False),
+      #   sa.Column("body", sa.String(), nullable=False),
    )
    op.create_index("ix_alerts_user_id", "alerts", ["user_id"])
    op.create_index("ix_alerts_product_id", "alerts", ["product_id"])

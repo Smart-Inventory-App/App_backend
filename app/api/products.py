@@ -5,8 +5,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
 
+from app.models.alert import Alert
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.config import settings
 from app.models.activity_log import AdminActivityLog
 from app.models.product import Product
 from app.models.profile import DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_STOCK_MINIMO, UserProfile
@@ -90,28 +92,40 @@ def _get_user(user_id: int, db: Session) -> AuthUser:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
     return user
 
+def _create_alert(product: Product, alert_type: str, alert_level: str, db: Session) -> None:
+    alert = Alert(
+        user_id=product.user_id,
+        product_id=product.id,
+        type=alert_type,
+        level=alert_level,
+    )
+    db.add(alert)
+    db.commit()
+
 def _notificate_low_stock(token: str, product: Product):
     message_title = "Stock Bajo"
     message_body = "Hay pocas unidades del producto "+product.nombre+" ("+str(product.stock)+" unidades)."
-    # return send_push(token, message_title, message_body)
-    # guardar alerta en db
     return notification_service.send_notification(token, message_title, message_body, "")
 
 def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
     message_title = "Producto próximo a vencerse"
     message_body = "El producto "+product.nombre+" vence en "+str(expirancy_days)+"dias."
     return notification_service.send_notification(token, message_title, message_body, "")
-    # guardar alerta en db
 
-def _check_product_state(product: Product, user: AuthUser, profile: UserProfile):
+def _check_product_state(product: Product, user: AuthUser, profile: UserProfile, db: Session):
     stock_warning = profile.stock_minimo or DEFAULT_STOCK_MINIMO
     expirancy_warning = profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
     if product.stock < stock_warning:
+        _create_alert(product, "stock", "critical", db)
         response, _ = _notificate_low_stock(user.firebase_token, product)
         print("\n\nse envio la notificacion de stock: "+str(response)+"\n\n")
     if product.vencimiento != None:
         expirancy_days = (product.vencimiento - date.today()).days
         if expirancy_days < expirancy_warning:
+            if expirancy_days <= 1:
+                _create_alert(product, "expiry", "critical", db)
+            else:
+                _create_alert(product, "expiry", "warning", db)
             response, _ = _notificate_expirancy(user.firebase_token, product, expirancy_days)
             print("\n\nse envio la notificacion de vencimiento: "+str(response)+"\n\n")
 
@@ -284,7 +298,7 @@ async def update_product(
         setattr(product, field, value)
     user = _get_user(user_id, db)
     profile = _get_or_create_profile(user_id, db)
-    _check_product_state(product, user, profile)
+    _check_product_state(product, user, profile, db)
     db.commit()
     db.refresh(product)
     if changed_fields:
