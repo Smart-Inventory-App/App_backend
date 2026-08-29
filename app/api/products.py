@@ -135,8 +135,11 @@ async def _check_product_state(
     Evalúa el estado de un producto y envía alertas según corresponda.
     Retorna el resultado ML (daily_rate, days_until_stockout, stage) o None.
     """
-    # Alerta de vencimiento (estática — no requiere ML)
-    expirancy_warning = profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
+    # Alerta de vencimiento (estática — no requiere ML). El producto puede
+    # tener su propia regla; si no, se usa la del perfil del usuario.
+    expirancy_warning = (
+        product.dias_alerta_vencimiento or profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
+    )
     if product.vencimiento is not None:
         expirancy_days = (product.vencimiento - date.today()).days
         if expirancy_days < expirancy_warning:
@@ -144,7 +147,7 @@ async def _check_product_state(
 
     if not settings.ML_SERVICE_URL:
         return None
-    coverage_threshold = profile.stock_minimo or DEFAULT_COVERAGE_DAYS
+    coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
     try:
         events = (
             db.query(ConsumptionEvent)
@@ -283,7 +286,7 @@ async def suggest_products(
             continue
         seen.add(key)
         suggestions.append(
-            ProductSuggestion(nombre=p.nombre, marca=p.marca, categoria=p.categoria, ubicacion=p.ubicacion)
+            ProductSuggestion(id=p.id, nombre=p.nombre, marca=p.marca, categoria=p.categoria, ubicacion=p.ubicacion)
         )
         if len(suggestions) >= 8:
             break
@@ -338,7 +341,9 @@ async def create_product(
         result = await _check_product_state(existing, user, profile, db)
         if result:
             days_until_stockout = result.get("days_until_stockout")
-            overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * (profile.stock_minimo or DEFAULT_COVERAGE_DAYS))
+            overstock_threshold = max(
+                DEFAULT_OVERSTOCK_DAYS, 4 * (existing.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS)
+            )
             if days_until_stockout is not None and days_until_stockout > overstock_threshold:
                 _notificate_overstock(user.firebase_token, existing, days_until_stockout)
         return ProductResponse.model_validate(existing, from_attributes=True).model_copy(update={"merged": True})
@@ -425,7 +430,9 @@ async def update_product(
 
     if result and stock_increased:
         days_until_stockout = result.get("days_until_stockout")
-        overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * (profile.stock_minimo or DEFAULT_COVERAGE_DAYS))
+        overstock_threshold = max(
+            DEFAULT_OVERSTOCK_DAYS, 4 * (product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS)
+        )
         if days_until_stockout is not None and days_until_stockout > overstock_threshold:
             _notificate_overstock(user.firebase_token, product, days_until_stockout)
 
@@ -485,6 +492,89 @@ async def register_event(
     profile = _get_or_create_profile(user_id, db)
     await _check_product_state(product, user, profile, db)
     return {"event_type": data.event_type, "quantity": data.quantity, "remaining_stock": product.stock}
+
+
+def _get_own_consumption_event(product_id: int, event_id: int, db: Session) -> ConsumptionEvent:
+    event = db.query(ConsumptionEvent).filter(
+        ConsumptionEvent.id == event_id,
+        ConsumptionEvent.product_id == product_id,
+    ).first()
+    if not event:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro de consumo no encontrado")
+    if event.event_type not in ("consumed", "expired"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Solo se pueden corregir registros de consumo (no de entrada)",
+        )
+    return event
+
+
+@router.put("/{product_id}/events/{event_id}")
+async def update_consumption_event(
+    product_id: int,
+    event_id: int,
+    data: EventRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id = current_user["sub"]
+    actor_email = current_user.get("email")
+    product = _get_user_product(product_id, user_id, db)
+    event = _get_own_consumption_event(product_id, event_id, db)
+
+    new_stock = product.stock + event.quantity - data.quantity
+    if new_stock < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No se puede corregir: dejaría el stock en negativo",
+        )
+
+    old_quantity = event.quantity
+    event.quantity = data.quantity
+    event.event_type = data.event_type
+    product.stock = new_stock
+    db.commit()
+    db.refresh(product)
+
+    user = _get_user(user_id, db)
+    profile = _get_or_create_profile(user_id, db)
+    await _check_product_state(product, user, profile, db)
+    _log_activity(
+        db, "product_updated", actor_email, user_id, actor_email,
+        f"{actor_email or user_id} corrigió un consumo de \"{product.nombre}\" "
+        f"(de {old_quantity} a {data.quantity} unidades) desde la app",
+    )
+    return {"event_type": event.event_type, "quantity": event.quantity, "remaining_stock": product.stock}
+
+
+@router.delete("/{product_id}/events/{event_id}")
+async def delete_consumption_event(
+    product_id: int,
+    event_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id = current_user["sub"]
+    actor_email = current_user.get("email")
+    product = _get_user_product(product_id, user_id, db)
+    event = _get_own_consumption_event(product_id, event_id, db)
+
+    quantity = event.quantity
+    motivo = event.event_type
+    product.stock += quantity
+    db.delete(event)
+    db.commit()
+    db.refresh(product)
+
+    user = _get_user(user_id, db)
+    profile = _get_or_create_profile(user_id, db)
+    await _check_product_state(product, user, profile, db)
+    _log_activity(
+        db, "product_updated", actor_email, user_id, actor_email,
+        f"{actor_email or user_id} eliminó un registro de consumo de \"{product.nombre}\" "
+        f"({quantity} unidades, {motivo}) desde la app",
+    )
+    return {"remaining_stock": product.stock}
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
