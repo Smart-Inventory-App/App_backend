@@ -30,6 +30,15 @@ class EventRequest(BaseModel):
     event_type: Literal["consumed", "expired"]
     quantity: int
 
+
+class EventCorrection(BaseModel):
+    event_type: Literal["consumed", "expired", "restocked"]
+    quantity: int
+
+
+def _stock_effect(event_type: str, quantity: int) -> int:
+    return quantity if event_type == "restocked" else -quantity
+
 router = APIRouter(prefix="/products", tags=["products"])
 
 
@@ -286,7 +295,16 @@ async def suggest_products(
             continue
         seen.add(key)
         suggestions.append(
-            ProductSuggestion(id=p.id, nombre=p.nombre, marca=p.marca, categoria=p.categoria, ubicacion=p.ubicacion)
+            ProductSuggestion(
+                id=p.id,
+                nombre=p.nombre,
+                marca=p.marca,
+                categoria=p.categoria,
+                ubicacion=p.ubicacion,
+                vencimiento=p.vencimiento,
+                stock_minimo=p.stock_minimo,
+                dias_alerta_vencimiento=p.dias_alerta_vencimiento,
+            )
         )
         if len(suggestions) >= 8:
             break
@@ -501,11 +519,6 @@ def _get_own_consumption_event(product_id: int, event_id: int, db: Session) -> C
     ).first()
     if not event:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro de consumo no encontrado")
-    if event.event_type not in ("consumed", "expired"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Solo se pueden corregir registros de consumo (no de entrada)",
-        )
     return event
 
 
@@ -513,7 +526,7 @@ def _get_own_consumption_event(product_id: int, event_id: int, db: Session) -> C
 async def update_consumption_event(
     product_id: int,
     event_id: int,
-    data: EventRequest,
+    data: EventCorrection,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -522,7 +535,11 @@ async def update_consumption_event(
     product = _get_user_product(product_id, user_id, db)
     event = _get_own_consumption_event(product_id, event_id, db)
 
-    new_stock = product.stock + event.quantity - data.quantity
+    new_stock = (
+        product.stock
+        - _stock_effect(event.event_type, event.quantity)
+        + _stock_effect(data.event_type, data.quantity)
+    )
     if new_stock < 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -561,7 +578,13 @@ async def delete_consumption_event(
 
     quantity = event.quantity
     motivo = event.event_type
-    product.stock += quantity
+    new_stock = product.stock - _stock_effect(motivo, quantity)
+    if new_stock < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No se puede borrar: dejaría el stock en negativo",
+        )
+    product.stock = new_stock
     db.delete(event)
     db.commit()
     db.refresh(product)
