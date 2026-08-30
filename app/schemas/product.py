@@ -12,6 +12,8 @@ class ProductCreate(BaseModel):
     descripcion: Optional[str] = Field(None, max_length=400)
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
+    stock_minimo: Optional[int] = Field(None, gt=0)
+    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0)
 
 
 class ProductUpdate(BaseModel):
@@ -23,6 +25,8 @@ class ProductUpdate(BaseModel):
     descripcion: Optional[str] = Field(None, max_length=400)
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
+    stock_minimo: Optional[int] = Field(None, gt=0)
+    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0)
 
 
 class ProductResponse(BaseModel):
@@ -36,6 +40,8 @@ class ProductResponse(BaseModel):
     descripcion: Optional[str] = None
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
+    stock_minimo: Optional[int] = None
+    dias_alerta_vencimiento: Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     merged: bool = False
@@ -45,6 +51,7 @@ class ProductResponse(BaseModel):
 
 
 class ProductSuggestion(BaseModel):
+    id: int
     nombre: str
     marca: Optional[str] = None
     categoria: str
