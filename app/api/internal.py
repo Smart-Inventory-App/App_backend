@@ -43,6 +43,7 @@ def get_all_products(db: Session = Depends(get_db)):
             "nombre": p.nombre,
             "categoria": p.categoria,
             "stock": p.stock,
+            "stock_minimo": p.stock_minimo,
             "vencimiento": str(p.vencimiento) if p.vencimiento else None,
         }
         for p in products

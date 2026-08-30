@@ -167,6 +167,7 @@ async def _check_product_state(
         product_data = {
             "id": product.id,
             "stock": product.stock,
+            "stock_minimo": product.stock_minimo,
             "categoria": product.categoria,
             "nombre": product.nombre,
         }
