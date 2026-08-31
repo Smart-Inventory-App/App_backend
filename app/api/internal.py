@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
+from app.services.alert_job import run_daily_coverage_check
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -31,6 +32,18 @@ def get_all_consumption(db: Session = Depends(get_db)):
         }
         for e in events
     ]
+
+
+@router.post("/alerts/run", dependencies=[Depends(_verify_token)])
+async def trigger_alerts_all():
+    """Dispara el chequeo de alertas para todos los usuarios (forzado, ignora hora)."""
+    return await run_daily_coverage_check(force=True)
+
+
+@router.post("/alerts/run/{user_id}", dependencies=[Depends(_verify_token)])
+async def trigger_alerts_user(user_id: str):
+    """Dispara el chequeo de alertas para un usuario específico (forzado)."""
+    return await run_daily_coverage_check(target_user_id=user_id, force=True)
 
 
 @router.get("/products", dependencies=[Depends(_verify_token)])
