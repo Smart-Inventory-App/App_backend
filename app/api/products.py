@@ -123,6 +123,13 @@ def _notificate_overstock(token: str, product: Product, days: int):
         f"Tenés {product.nombre} para aproximadamente {days} días. Quizás compraste de más.",
     )
 
+def _notificate_understock(token: str, product: Product, days: int):
+    send_push(
+        token,
+        "Compraste menos de lo necesario",
+        f"Aun con la compra, {product.nombre} te alcanza solo para {days} días. Considerá comprar más.",
+    )
+
 def _notificate_slow_pace(token: str, product: Product, days_until_expiry: int, units_wasted: int):
     send_push(
         token,
@@ -138,7 +145,8 @@ def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
     )
 
 async def _check_product_state(
-    product: Product, user: AuthUser, profile: UserProfile, db: Session
+    product: Product, user: AuthUser, profile: UserProfile, db: Session,
+    stock_increased: bool = False,
 ) -> dict | None:
     """
     Evalúa el estado de un producto y envía alertas según corresponda.
@@ -176,6 +184,7 @@ async def _check_product_state(
         product_data = {
             "id": product.id,
             "stock": product.stock,
+            "stock_minimo": product.stock_minimo,
             "categoria": product.categoria,
             "nombre": product.nombre,
         }
@@ -190,8 +199,9 @@ async def _check_product_state(
             days_until_stockout = result.get("days_until_stockout")
             daily_rate = result.get("daily_rate")
 
-            # Alerta de bajo stock
-            if days_until_stockout is not None and days_until_stockout < coverage_threshold:
+            # Alerta de bajo stock — se suprime en restock porque el caller
+            # decide entre "compraste de más" o "compraste de menos"
+            if not stock_increased and days_until_stockout is not None and days_until_stockout < coverage_threshold:
                 _notificate_low_coverage(user.firebase_token, product, days_until_stockout)
 
             # Alerta de ritmo lento vs. vencimiento
@@ -356,14 +366,15 @@ async def create_product(
             f"{actor_email or user_id} sumó {data.stock} unidades a \"{existing.nombre}\" (stock: {existing.stock})",
         )
         user = _get_user(user_id, db)
-        result = await _check_product_state(existing, user, profile, db)
+        result = await _check_product_state(existing, user, profile, db, stock_increased=True)
         if result:
             days_until_stockout = result.get("days_until_stockout")
-            overstock_threshold = max(
-                DEFAULT_OVERSTOCK_DAYS, 4 * (existing.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS)
-            )
+            coverage_threshold = existing.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
+            overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
             if days_until_stockout is not None and days_until_stockout > overstock_threshold:
                 _notificate_overstock(user.firebase_token, existing, days_until_stockout)
+            elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
+                _notificate_understock(user.firebase_token, existing, days_until_stockout)
         return ProductResponse.model_validate(existing, from_attributes=True).model_copy(update={"merged": True})
 
     product = Product(user_id=user_id, **data.model_dump())
@@ -444,15 +455,16 @@ async def update_product(
 
     user = _get_user(user_id, db)
     profile = _get_or_create_profile(user_id, db)
-    result = await _check_product_state(product, user, profile, db)
+    result = await _check_product_state(product, user, profile, db, stock_increased=stock_increased)
 
     if result and stock_increased:
         days_until_stockout = result.get("days_until_stockout")
-        overstock_threshold = max(
-            DEFAULT_OVERSTOCK_DAYS, 4 * (product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS)
-        )
+        coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
+        overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
         if days_until_stockout is not None and days_until_stockout > overstock_threshold:
             _notificate_overstock(user.firebase_token, product, days_until_stockout)
+        elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
+            _notificate_understock(user.firebase_token, product, days_until_stockout)
 
     db.commit()
     db.refresh(product)

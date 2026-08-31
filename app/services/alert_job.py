@@ -45,25 +45,39 @@ async def _ml_predict(events: list, product_data: dict) -> dict | None:
     return None
 
 
-async def run_daily_coverage_check() -> None:
+async def run_daily_coverage_check(
+    target_user_id: str | None = None,
+    force: bool = False,
+) -> dict:
+    """
+    Evalúa alertas de cobertura.
+    - target_user_id: si se pasa, solo procesa ese usuario.
+    - force: si True, ignora el filtro de hora configurada.
+    """
     current_hour = datetime.now(timezone.utc).hour
-    logger.info(f"Chequeo de cobertura hora UTC={current_hour}...")
+    logger.info(f"Chequeo de cobertura hora UTC={current_hour} force={force} user={target_user_id}")
     db = SessionLocal()
     alerts_sent = 0
+    users_processed = 0
     try:
         user_ids = [row[0] for row in db.query(Product.user_id).distinct().all()]
 
         for user_id in user_ids:
+            if target_user_id is not None and str(user_id) != str(target_user_id):
+                continue
+
             user = db.query(AuthUser).filter(AuthUser.id == user_id).first()
             if not user or not user.firebase_token:
                 continue
 
             profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
 
-            # Solo procesar usuarios cuya hora de chequeo coincide con la hora actual
+            # Respetar la hora configurada salvo que sea forzado por el admin
             user_check_hour = (profile.alert_check_hour if profile and profile.alert_check_hour is not None else DEFAULT_ALERT_CHECK_HOUR)
-            if user_check_hour != current_hour:
+            if not force and user_check_hour != current_hour:
                 continue
+
+            users_processed += 1
 
             coverage_threshold = (profile.stock_minimo if profile else None) or DEFAULT_COVERAGE_DAYS
             expiry_threshold = (profile.dias_alerta_vencimiento if profile else None) or DEFAULT_DIAS_ALERTA_VENCIMIENTO
@@ -96,6 +110,7 @@ async def run_daily_coverage_check() -> None:
                 product_data = {
                     "id": product.id,
                     "stock": product.stock,
+                    "stock_minimo": product.stock_minimo,
                     "categoria": product.categoria,
                     "nombre": product.nombre,
                 }
@@ -132,8 +147,9 @@ async def run_daily_coverage_check() -> None:
                                 )
                                 alerts_sent += 1
 
-        logger.info(f"Chequeo diario completado: {alerts_sent} alertas enviadas.")
+        logger.info(f"Chequeo completado: {alerts_sent} alertas enviadas a {users_processed} usuarios.")
     except Exception:
-        logger.exception("Error en el chequeo diario de cobertura")
+        logger.exception("Error en el chequeo de cobertura")
     finally:
         db.close()
+    return {"alerts_sent": alerts_sent, "users_processed": users_processed}
