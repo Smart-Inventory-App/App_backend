@@ -1,12 +1,13 @@
 from datetime import date
 from typing import Optional
+from uuid import UUID
 
 from pydantic import BaseModel
 
 
 class AlertResponse(BaseModel):
     id: int
-    user_id: int
+    user_id: UUID
     product_id: int
     type: str
     level: str

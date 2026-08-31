@@ -13,22 +13,22 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 @router.get("/", response_model=list[AlertResponse])
 async def get_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     alerts = (
-        db.query(Alert, Product)
-            .join(Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user.id)
+        db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
+            .join(Product, Alert.product_id == Product.id)
+            .filter(Alert.user_id == current_user["sub"])
             .all()
         )
     return [
         AlertResponse(
-            id=alert.id,
-            user_id=alert.user_id,
-            product_id=alert.product_id,
-            type=alert.type,
-            level=alert.level,
-            image_url=alert.product.image_url if alert.product else None,
-            product_name=alert.product.nombre if alert.product else None,
-            product_stock=alert.product.stock if alert.product else None,
-            product_expiry=alert.product.vencimiento if alert.product else None,
+            id=alert[0].id,
+            user_id=alert[0].user_id,
+            product_id=alert[0].product_id,
+            type=alert[0].type,
+            level=alert[0].level,
+            image_url=alert[4] if alert[4] else None,
+            product_name=alert[1] if alert[1] else None,
+            product_stock=alert[2] if alert[2] else None,
+            product_expiry=alert[3] if alert[3] else None,
         )
         for alert in alerts
     ]
@@ -36,22 +36,22 @@ async def get_alerts(current_user=Depends(get_current_user), db: Session = Depen
 @router.get("/critical_alerts", response_model=list[AlertResponse])
 async def get_critical_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     alerts = (
-        db.query(Alert, Product)
-            .join(Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user.id, Alert.level == "critical")
+        db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
+            .join(Product, Alert.product_id == Product.id)
+            .filter(Alert.user_id == current_user["sub"], Alert.level == "critical")
             .all()
         )
     return [
         AlertResponse(
-            id=alert.id,
-            user_id=alert.user_id,
-            product_id=alert.product_id,
-            type=alert.type,
-            level=alert.level,
-            image_url=alert.product.image_url if alert.product else None,
-            product_name=alert.product.nombre if alert.product else None,
-            product_stock=alert.product.stock if alert.product else None,
-            product_expiry=alert.product.vencimiento if alert.product else None,
+            id=alert[0].id,
+            user_id=alert[0].user_id,
+            product_id=alert[0].product_id,
+            type=alert[0].type,
+            level=alert[0].level,
+            image_url=alert[4] if alert[4] else None,
+            product_name=alert[1] if alert[1] else None,
+            product_stock=alert[2] if alert[2] else None,
+            product_expiry=alert[3] if alert[3] else None,
         )
         for alert in alerts
     ]
@@ -59,22 +59,45 @@ async def get_critical_alerts(current_user=Depends(get_current_user), db: Sessio
 @router.get("/expiry_alerts", response_model=list[AlertResponse])
 async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     alerts = (
-        db.query(Alert, Product)
-            .join(Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user.id, Alert.type == "expiry")
+        db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
+            .join(Product, Alert.product_id == Product.id)
+            .filter(Alert.user_id == current_user["sub"], Alert.type == "expiry")
             .all()
         )
     return [
         AlertResponse(
-            id=alert.id,
-            user_id=alert.user_id,
-            product_id=alert.product_id,
-            type=alert.type,
-            level=alert.level,
-            image_url=alert.product.image_url if alert.product else None,
-            product_name=alert.product.nombre if alert.product else None,
-            product_stock=alert.product.stock if alert.product else None,
-            product_expiry=alert.product.vencimiento if alert.product else None,
+            id=alert[0].id,
+            user_id=alert[0].user_id,
+            product_id=alert[0].product_id,
+            type=alert[0].type,
+            level=alert[0].level,
+            image_url=alert[4] if alert[4] else None,
+            product_name=alert[1] if alert[1] else None,
+            product_stock=alert[2] if alert[2] else None,
+            product_expiry=alert[3] if alert[3] else None,
+        )
+        for alert in alerts
+    ]
+
+@router.get("/stock_alerts", response_model=list[AlertResponse])
+async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    alerts = (
+        db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
+            .join(Product, Alert.product_id == Product.id)
+            .filter(Alert.user_id == current_user["sub"], Alert.type == "stock")
+            .all()
+        )
+    return [
+        AlertResponse(
+            id=alert[0].id,
+            user_id=alert[0].user_id,
+            product_id=alert[0].product_id,
+            type=alert[0].type,
+            level=alert[0].level,
+            image_url=alert[4] if alert[4] else None,
+            product_name=alert[1] if alert[1] else None,
+            product_stock=alert[2] if alert[2] else None,
+            product_expiry=alert[3] if alert[3] else None,
         )
         for alert in alerts
     ]
@@ -83,17 +106,17 @@ async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session 
 async def get_alert_summary(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     critical_alerts = (
         db.query(Alert)
-            .filter(Alert.user_id == current_user.id, Alert.level == "critical")
+            .filter(Alert.user_id == current_user["sub"], Alert.level == "critical")
             .count()
     )
     warning_alerts = (
         db.query(Alert)
-            .filter(Alert.user_id == current_user.id, Alert.level == "warning")
+            .filter(Alert.user_id == current_user["sub"], Alert.level == "warning")
             .count()
     )
     info_alerts = (
         db.query(Alert)
-            .filter(Alert.user_id == current_user.id, Alert.level == "info")
+            .filter(Alert.user_id == current_user["sub"], Alert.level == "info")
             .count()
     )
     return {

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import transactions, health, products, profile
+from app.api import transactions, health, products, profile, alerts
 
 # Create FastAPI app
 app = FastAPI(
@@ -24,6 +24,7 @@ app.include_router(health.router)
 app.include_router(transactions.router)
 app.include_router(products.router)
 app.include_router(profile.router)
+app.include_router(alerts.router)
 
 
 @app.get("/")

@@ -22,7 +22,11 @@ def upgrade() -> None:
    op.create_table(
         "alerts",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("user_id", sa.String(), nullable=False),
+        sa.Column(
+            "user_id",
+            sa.UUID(as_uuid=True),
+            sa.ForeignKey("auth_users.id", ondelete="CASCADE"),
+            nullable=False),
         sa.Column(
            "product_id",
            sa.Integer(),
@@ -30,8 +34,6 @@ def upgrade() -> None:
            nullable=False),
         sa.Column("type", sa.String(), nullable=False),
         sa.Column("level", sa.String(), nullable=False),
-      #   sa.Column("title", sa.String(), nullable=False),
-      #   sa.Column("body", sa.String(), nullable=False),
    )
    op.create_index("ix_alerts_user_id", "alerts", ["user_id"])
    op.create_index("ix_alerts_product_id", "alerts", ["product_id"])

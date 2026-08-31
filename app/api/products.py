@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
@@ -94,13 +95,15 @@ def _get_user(user_id: int, db: Session) -> AuthUser:
 
 def _create_alert(product: Product, alert_type: str, alert_level: str, db: Session) -> None:
     alert = Alert(
-        user_id=product.user_id,
+        user_id=UUID(product.user_id),
         product_id=product.id,
         type=alert_type,
         level=alert_level,
     )
     db.add(alert)
     db.commit()
+    db.refresh(alert)
+    print(f"\n\nSe creó alerta de tipo '{alert_type}' y nivel '{alert_level}' para el producto '{product.nombre}'\n\n")
 
 def _notificate_low_stock(token: str, product: Product):
     message_title = "Stock Bajo"
@@ -115,19 +118,37 @@ def _notificate_expirancy(token: str, product: Product, expirancy_days: int):
 def _check_product_state(product: Product, user: AuthUser, profile: UserProfile, db: Session):
     stock_warning = profile.stock_minimo or DEFAULT_STOCK_MINIMO
     expirancy_warning = profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
+    product_alerts = db.query(Alert).filter(Alert.product_id == product.id).all()
     if product.stock < stock_warning:
-        _create_alert(product, "stock", "critical", db)
-        response, _ = _notificate_low_stock(user.firebase_token, product)
-        print("\n\nse envio la notificacion de stock: "+str(response)+"\n\n")
+        if any(alert.type == "stock" and alert.level == "critical" for alert in product_alerts):
+            response_status = _notificate_low_stock(profile.notification_token, product)
+            print("\n\nse envio la notificacion de stock: "+str(response_status)+"\n\n")
+        else:
+            _create_alert(product, "stock", "critical", db)
+            response_status = _notificate_low_stock(profile.notification_token, product)
+            print("\n\nse envio la notificacion de stock: "+str(response_status)+"\n\n")
+    elif any(alert.type == "stock" for alert in product_alerts):
+        db.query(Alert).filter(Alert.product_id == product.id, Alert.type == "stock").delete()
+        db.commit()
     if product.vencimiento != None:
         expirancy_days = (product.vencimiento - date.today()).days
         if expirancy_days < expirancy_warning:
             if expirancy_days <= 1:
-                _create_alert(product, "expiry", "critical", db)
+                if not any(alert.type == "expiry" and (alert.level == "critical" or alert.level == "warning") for alert in product_alerts):
+                    _create_alert(product, "expiry", "critical", db)
+                if any(alert.type == "expiry" and alert.level == "warning" for alert in product_alerts):
+                    alert = next(alert for alert in product_alerts if alert.type == "expiry" and alert.level == "warning")
+                    alert.level = "critical"
+                    db.commit()
+                    db.refresh(alert)
             else:
-                _create_alert(product, "expiry", "warning", db)
-            response, _ = _notificate_expirancy(user.firebase_token, product, expirancy_days)
-            print("\n\nse envio la notificacion de vencimiento: "+str(response)+"\n\n")
+                if not any(alert.type == "expiry" and alert.level == "warning" for alert in product_alerts):
+                    _create_alert(product, "expiry", "warning", db)
+            response_status = _notificate_expirancy(profile.notification_token, product, expirancy_days)
+            print("\n\nse envio la notificacion de vencimiento: "+str(response_status)+"\n\n")
+        elif any(alert.type == "expiry" for alert in product_alerts):
+            db.query(Alert).filter(Alert.product_id == product.id, Alert.type == "expiry").delete()
+            db.commit()
 
 
 
@@ -298,7 +319,8 @@ async def update_product(
         setattr(product, field, value)
     user = _get_user(user_id, db)
     profile = _get_or_create_profile(user_id, db)
-    _check_product_state(product, user, profile, db)
+    if data.stock != None or data.vencimiento != None:
+        _check_product_state(product, user, profile, db)
     db.commit()
     db.refresh(product)
     if changed_fields:

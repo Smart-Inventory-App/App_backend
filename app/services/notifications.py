@@ -16,4 +16,4 @@ class NotificationService:
             'email': user_email
         }
         response = requests.post(f"{self.api_url}/send_notification", json=payload)
-        return response.status_code, response.json()
+        return response.status_code
