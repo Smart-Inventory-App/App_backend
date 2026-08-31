@@ -56,6 +56,9 @@ class ProductSuggestion(BaseModel):
     marca: Optional[str] = None
     categoria: str
     ubicacion: Optional[str] = None
+    vencimiento: Optional[date] = None
+    stock_minimo: Optional[int] = None
+    dias_alerta_vencimiento: Optional[int] = None
 
 
 class ProductDefaults(BaseModel):
