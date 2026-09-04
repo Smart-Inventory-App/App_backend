@@ -57,6 +57,7 @@ class ProductSuggestion(BaseModel):
     categoria: str
     ubicacion: Optional[str] = None
     vencimiento: Optional[date] = None
+    stock: int = 0
     stock_minimo: Optional[int] = None
     dias_alerta_vencimiento: Optional[int] = None
 
