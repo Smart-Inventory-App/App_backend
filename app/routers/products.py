@@ -1,12 +1,19 @@
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Literal, Optional
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
 from app.schemas.product import ProductCreate, ProductUpdate, ProductResponse
+
+
+class EventRequest(BaseModel):
+    event_type: Literal["consumed", "expired"]
+    quantity: int
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -116,6 +123,7 @@ async def update_product(
             product_id=product.id,
             user_id=product.user_id,
             quantity=product.stock - new_stock,
+            event_type="consumed",
         )
         db.add(event)
     for field, value in data.model_dump(exclude_unset=True).items():
@@ -139,9 +147,59 @@ async def get_consumption_history(
         .all()
     )
     return [
-        {"id": e.id, "quantity": e.quantity, "consumed_at": e.consumed_at}
+        {"id": e.id, "quantity": e.quantity, "event_type": e.event_type, "consumed_at": e.consumed_at}
         for e in events
     ]
+
+
+@router.get("/expired", response_model=list[ProductResponse])
+async def get_expired_products(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Productos vencidos con stock > 0 que aún no fueron confirmados."""
+    today = date.today()
+    return (
+        db.query(Product)
+        .filter(
+            Product.user_id == current_user["sub"],
+            Product.vencimiento < today,
+            Product.stock > 0,
+        )
+        .all()
+    )
+
+
+@router.post("/{product_id}/events", status_code=status.HTTP_201_CREATED)
+async def register_event(
+    product_id: int,
+    data: EventRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    El frontend llama este endpoint cuando el usuario responde al pop-up de vencimiento.
+    event_type='consumed': el usuario lo consumió antes de que venciera.
+    event_type='expired': el producto venció sin consumirse → stock se pone a 0.
+    """
+    product = _get_user_product(product_id, current_user["sub"], db)
+
+    if data.quantity <= 0 or data.quantity > product.stock:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cantidad inválida",
+        )
+
+    event = ConsumptionEvent(
+        product_id=product.id,
+        user_id=product.user_id,
+        quantity=data.quantity,
+        event_type=data.event_type,
+    )
+    db.add(event)
+    product.stock = max(0, product.stock - data.quantity)
+    db.commit()
+    return {"event_type": data.event_type, "quantity": data.quantity, "remaining_stock": product.stock}
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -58,16 +58,18 @@ class ProfileResponse(BaseModel):
     username: Optional[str] = None
     firstName: Optional[str] = None
     lastName: Optional[str] = None
-    lowStockThreshold: int
+    coverageDaysThreshold: int
     expiryDaysThreshold: int
+    alertCheckHour: int
 
 
 class ProfileUpdate(BaseModel):
     firstName: str
     lastName: str
     username: Optional[str] = None
-    lowStockThreshold: Optional[int] = Field(None, gt=0)
+    coverageDaysThreshold: Optional[int] = Field(None, gt=0)
     expiryDaysThreshold: Optional[int] = Field(None, gt=0)
+    alertCheckHour: Optional[int] = Field(None, ge=0, le=23)
 
 class NotificationToken(BaseModel):
     token: str

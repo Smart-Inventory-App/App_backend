@@ -9,4 +9,6 @@ class ConsumptionEvent(Base):
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(String, nullable=False, index=True)
     quantity = Column(Integer, nullable=False)
+    # "consumed": bajó el stock por uso real; "expired": el producto venció sin consumirse
+    event_type = Column(String, nullable=False, server_default="consumed")
     consumed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

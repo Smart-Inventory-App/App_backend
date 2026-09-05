@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.profile import DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_STOCK_MINIMO, UserProfile
-from app.schemas.user import NotificationToken, ProfileResponse, ProfileUpdate
+from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
+from app.schemas.user import ProfileResponse, ProfileUpdate, NotificationToken
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -26,8 +26,9 @@ def _to_response(user_id: str, email: str | None, profile: UserProfile) -> Profi
         username=profile.username,
         firstName=profile.first_name,
         lastName=profile.last_name,
-        lowStockThreshold=profile.stock_minimo or DEFAULT_STOCK_MINIMO,
+        coverageDaysThreshold=profile.stock_minimo or DEFAULT_COVERAGE_DAYS,
         expiryDaysThreshold=profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO,
+        alertCheckHour=profile.alert_check_hour if profile.alert_check_hour is not None else DEFAULT_ALERT_CHECK_HOUR,
     )
 
 
@@ -52,27 +53,12 @@ async def update_profile(
     profile.first_name = data.firstName
     profile.last_name = data.lastName
     profile.username = data.username
-    if data.lowStockThreshold is not None:
-        profile.stock_minimo = data.lowStockThreshold
+    if data.coverageDaysThreshold is not None:
+        profile.stock_minimo = data.coverageDaysThreshold
     if data.expiryDaysThreshold is not None:
         profile.dias_alerta_vencimiento = data.expiryDaysThreshold
+    if data.alertCheckHour is not None:
+        profile.alert_check_hour = data.alertCheckHour
     db.commit()
     db.refresh(profile)
     return _to_response(user_id, current_user.get("email"), profile)
-
-
-@router.post("/register_notification_token", status_code=200)
-async def register_token(
-    data: NotificationToken,
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    user_id = current_user["sub"]
-    profile = _get_or_create(user_id, db)
-    if not profile:
-        return {"message": "User not found"}
-    profile.notification_token = data.token
-    db.commit()
-    db.refresh(profile)
-    print(f"Registered notification token for user {user_id}: {data.token}")
-    return {"message": "Token registered successfully"}
