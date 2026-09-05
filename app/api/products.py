@@ -30,11 +30,13 @@ from app.services.notifications import NotificationService
 class EventRequest(BaseModel):
     event_type: Literal["consumed", "expired"]
     quantity: int
+    note: Optional[str] = None
 
 
 class EventCorrection(BaseModel):
     event_type: Literal["consumed", "expired", "restocked"]
     quantity: int
+    note: Optional[str] = None
 
 
 def _stock_effect(event_type: str, quantity: int) -> int:
@@ -378,32 +380,24 @@ async def suggest_products(
     rows = (
         db.query(Product)
         .filter(Product.user_id == user_id, Product.nombre.ilike(f"%{q}%"))
-        .order_by(Product.created_at.desc())
-        .limit(50)
+        .order_by(Product.nombre.asc(), Product.vencimiento.asc())
+        .limit(10)
         .all()
     )
-    seen: set[str] = set()
-    suggestions: list[ProductSuggestion] = []
-    for p in rows:
-        key = p.nombre.strip().lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        suggestions.append(
-            ProductSuggestion(
-                id=p.id,
-                nombre=p.nombre,
-                marca=p.marca,
-                categoria=p.categoria,
-                ubicacion=p.ubicacion,
-                vencimiento=p.vencimiento,
-                stock_minimo=p.stock_minimo,
-                dias_alerta_vencimiento=p.dias_alerta_vencimiento,
-            )
+    return [
+        ProductSuggestion(
+            id=p.id,
+            nombre=p.nombre,
+            marca=p.marca,
+            categoria=p.categoria,
+            ubicacion=p.ubicacion,
+            vencimiento=p.vencimiento,
+            stock=p.stock,
+            stock_minimo=p.stock_minimo,
+            dias_alerta_vencimiento=p.dias_alerta_vencimiento,
         )
-        if len(suggestions) >= 8:
-            break
-    return suggestions
+        for p in rows
+    ]
 
 
 @router.get("/defaults", response_model=ProductDefaults)
@@ -439,6 +433,7 @@ async def create_product(
             user_id=user_id,
             quantity=data.stock,
             event_type="restocked",
+            actor_email=actor_email,
         ))
         try:
             db.commit()
@@ -529,6 +524,7 @@ async def update_product(
             user_id=product.user_id,
             quantity=old_stock - new_stock_value,
             event_type="consumed",
+            actor_email=actor_email,
         ))
     elif stock_increased:
         db.add(ConsumptionEvent(
@@ -536,6 +532,7 @@ async def update_product(
             user_id=product.user_id,
             quantity=new_stock_value - old_stock,
             event_type="restocked",
+            actor_email=actor_email,
         ))
 
     changed_fields = list(update_dict.keys())
@@ -578,8 +575,18 @@ async def get_consumption_history(
         .order_by(ConsumptionEvent.consumed_at.asc())
         .all()
     )
+    reversed_ids = {e.reverses_event_id for e in events if e.reverses_event_id is not None}
     return [
-        {"id": e.id, "quantity": e.quantity, "event_type": e.event_type, "consumed_at": e.consumed_at}
+        {
+            "id": e.id,
+            "quantity": e.quantity,
+            "event_type": e.event_type,
+            "consumed_at": e.consumed_at,
+            "note": e.note,
+            "actor_email": e.actor_email,
+            "reverses_event_id": e.reverses_event_id,
+            "reversed": e.id in reversed_ids,
+        }
         for e in events
     ]
 
@@ -592,6 +599,7 @@ async def register_event(
     db: Session = Depends(get_db),
 ):
     user_id = current_user["sub"]
+    actor_email = current_user.get("email")
     product = _get_user_product(product_id, user_id, db)
     if data.quantity <= 0 or data.quantity > product.stock:
         raise HTTPException(
@@ -603,6 +611,8 @@ async def register_event(
         user_id=product.user_id,
         quantity=data.quantity,
         event_type=data.event_type,
+        actor_email=actor_email,
+        note=data.note,
     ))
     product.stock = max(0, product.stock - data.quantity)
     db.commit()
@@ -620,6 +630,19 @@ def _get_own_consumption_event(product_id: int, event_id: int, db: Session) -> C
     ).first()
     if not event:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro de consumo no encontrado")
+    if event.reverses_event_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Este registro ya es una corrección — no se puede corregir de nuevo",
+        )
+    already_reversed = db.query(ConsumptionEvent).filter(
+        ConsumptionEvent.reverses_event_id == event.id
+    ).first()
+    if already_reversed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Este registro ya fue corregido — corregí la versión más reciente",
+        )
     return event
 
 
@@ -647,12 +670,29 @@ async def update_consumption_event(
             detail="No se puede corregir: dejaría el stock en negativo",
         )
 
-    old_quantity = event.quantity
-    event.quantity = data.quantity
-    event.event_type = data.event_type
+    reversal_type = "consumed" if event.event_type == "restocked" else "restocked"
+    db.add(ConsumptionEvent(
+        product_id=product.id,
+        user_id=product.user_id,
+        quantity=event.quantity,
+        event_type=reversal_type,
+        actor_email=actor_email,
+        note=f"Corrección: revierte el registro #{event.id}",
+        reverses_event_id=event.id,
+    ))
+    new_event = ConsumptionEvent(
+        product_id=product.id,
+        user_id=product.user_id,
+        quantity=data.quantity,
+        event_type=data.event_type,
+        actor_email=actor_email,
+        note=data.note or f"Corrige el registro #{event.id} (antes: {event.quantity} {event.event_type})",
+    )
+    db.add(new_event)
     product.stock = new_stock
     db.commit()
     db.refresh(product)
+    db.refresh(new_event)
 
     user = _get_user(user_id, db)
     profile = _get_or_create_profile(user_id, db)
@@ -660,9 +700,9 @@ async def update_consumption_event(
     _log_activity(
         db, "product_updated", actor_email, user_id, actor_email,
         f"{actor_email or user_id} corrigió un consumo de \"{product.nombre}\" "
-        f"(de {old_quantity} a {data.quantity} unidades) desde la app",
+        f"(de {event.quantity} a {data.quantity} unidades) desde la app",
     )
-    return {"event_type": event.event_type, "quantity": event.quantity, "remaining_stock": product.stock}
+    return {"event_type": new_event.event_type, "quantity": new_event.quantity, "remaining_stock": product.stock}
 
 
 @router.delete("/{product_id}/events/{event_id}")
@@ -685,8 +725,17 @@ async def delete_consumption_event(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No se puede borrar: dejaría el stock en negativo",
         )
+    reversal_type = "consumed" if motivo == "restocked" else "restocked"
+    db.add(ConsumptionEvent(
+        product_id=product.id,
+        user_id=product.user_id,
+        quantity=quantity,
+        event_type=reversal_type,
+        actor_email=actor_email,
+        note=f"Deshecho: revierte el registro #{event.id}",
+        reverses_event_id=event.id,
+    ))
     product.stock = new_stock
-    db.delete(event)
     db.commit()
     db.refresh(product)
 
@@ -695,7 +744,7 @@ async def delete_consumption_event(
     await _check_product_state(product, user, profile, db)
     _log_activity(
         db, "product_updated", actor_email, user_id, actor_email,
-        f"{actor_email or user_id} eliminó un registro de consumo de \"{product.nombre}\" "
+        f"{actor_email or user_id} deshizo un registro de consumo de \"{product.nombre}\" "
         f"({quantity} unidades, {motivo}) desde la app",
     )
     return {"remaining_stock": product.stock}
