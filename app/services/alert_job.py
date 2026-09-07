@@ -9,13 +9,14 @@ import httpx
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.firebase import send_push
+from app.services.notifications import NotificationService
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
 from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, UserProfile
 from app.models.user import AuthUser
 
 logger = logging.getLogger(__name__)
+notification_service = NotificationService(api_url=settings.NOTIFICATION_SERVICE_URL)
 
 
 async def _ml_predict(events: list, product_data: dict) -> dict | None:
@@ -93,10 +94,11 @@ async def run_daily_coverage_check(
                 if product.vencimiento:
                     days_to_expiry = (product.vencimiento - date.today()).days
                     if 0 <= days_to_expiry < expiry_threshold:
-                        send_push(
+                        notification_service.send_notification(
                             user.firebase_token,
                             "Producto próximo a vencerse",
                             f"{product.nombre} vence en {days_to_expiry} días.",
+                            user.email
                         )
                         alerts_sent += 1
 
@@ -122,10 +124,11 @@ async def run_daily_coverage_check(
                     # Alerta de bajo stock
                     if days_until_stockout is not None and days_until_stockout < coverage_threshold:
                         label = "día" if days_until_stockout == 1 else "días"
-                        send_push(
+                        notification_service.send_notification(
                             user.firebase_token,
                             "Stock por agotarse",
                             f"{product.nombre} se agotará en aproximadamente {days_until_stockout} {label}.",
+                            user.email
                         )
                         alerts_sent += 1
 
@@ -140,10 +143,11 @@ async def run_daily_coverage_check(
                         if 0 < days_until_expiry < days_until_stockout:
                             units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
                             if units_wasted > 0:
-                                send_push(
+                                notification_service.send_notification(
                                     user.firebase_token,
                                     "Riesgo de vencimiento por bajo consumo",
                                     f"Al ritmo actual, {units_wasted} unidad{'es' if units_wasted != 1 else ''} de {product.nombre} vencer{'án' if units_wasted != 1 else 'á'} en {days_until_expiry} días.",
+                                    user.email
                                 )
                                 alerts_sent += 1
 
