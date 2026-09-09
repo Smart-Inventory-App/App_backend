@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # ML service URL for smart alerts
     ML_SERVICE_URL: str = ""
 
+    # OCR module service URL and timeout
+    OCR_SERVICE_URL: str = ""
+    OCR_TIMEOUT_SECONDS: float = 30.0
+
     # Firebase
     FIREBASE_CREDENTIALS: str
 
