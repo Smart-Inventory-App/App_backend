@@ -12,3 +12,7 @@ build
 .vscode
 postgres_data
 .env
+
+# Testing
+# Base SQLite
+test.db

@@ -1,12 +1,16 @@
-"""Test configuration and fixtures."""
+"""Test configuration and fixtures"""
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import String, create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.main import app
 from app.core.database import Base, get_db
 from app.core.security import get_current_user
+from app.models.user import AuthUser
+
+# SQLite has no UUID type: without this, create_all cannot build auth_users
+AuthUser.__table__.c.id.type = String(36)
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
 
@@ -15,7 +19,8 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 
 Base.metadata.create_all(bind=engine)
 
-TEST_USER = {"sub": "test-user-id", "email": "test@test.com"}
+TEST_USER_ID = "11111111-2222-3333-4444-555555555555"
+TEST_USER = {"sub": TEST_USER_ID, "email": "test@test.com"}
 
 
 def override_get_db():
@@ -43,7 +48,23 @@ def client():
 def db():
     Base.metadata.create_all(bind=engine)
     session = TestingSessionLocal()
+    _ensure_test_user(session)
     yield session
     session.close()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+
+
+def _ensure_test_user(session):
+    """Create the auth_users row that product endpoints look up to send push."""
+    if session.query(AuthUser).filter(AuthUser.id == TEST_USER_ID).first():
+        return
+    session.add(
+        AuthUser(
+            id=TEST_USER_ID,
+            email=TEST_USER["email"],
+            hashed_password="x",
+            is_active=True,
+        )
+    )
+    session.commit()
