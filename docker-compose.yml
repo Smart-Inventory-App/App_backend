@@ -29,6 +29,7 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key}
       JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8081,http://localhost:8100,http://localhost:19000,http://10.0.2.2:8000}
+      OCR_SERVICE_URL: ${OCR_SERVICE_URL:-http://tpp_ocr:8003}
     ports:
       - "8000:8000"
     depends_on:
