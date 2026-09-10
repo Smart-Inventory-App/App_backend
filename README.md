@@ -55,8 +55,12 @@ Alta de un producto **a partir de una foto**, en vez de a mano.
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
-| POST | `/products/scan` | Sube la foto y encola su procesamiento → `202 { job_id }` |
+| POST | `/products/scan` | Manda la foto. Código de barras → `200` resuelto; el resto → `202 { job_id }` |
 | GET | `/products/scan/{job_id}` | Estado del escaneo y, al terminar, el borrador |
+
+Los dos devuelven **la misma forma** (`ScanState`) y la regla para el cliente es una sola: **si `status` es `done`, el resultado ya está**.
+
+Un código de barras la cumple en la primera llamada, porque no pasa por un motor OCR —lo decodifica el coordinador— y encolarlo sería pagar la subida a Cloudinary, la cola y el polling por un trabajo de 0,2 s. Medido: **0,07 s** por esta vía contra 2,8 s por la otra; escanear una entrega de 50 productos pasa de dos minutos a cuatro segundos, y de 50 imágenes almacenadas a cero.
 
 **Campos de `POST /products/scan`** (`multipart/form-data`):
 
@@ -72,7 +76,7 @@ App → POST /products/scan ──► ocr_service ──► image_storage_servic
                                     │                    ▲
                                     │  worker            │ DELETE al terminar
                                     ▼                    │
-                             tesseract · easyocr · paddleocr
+                          tesseract · paddleocr ×2
 App → GET  /products/scan/{id} ─► { status, result: { draft } }
 App → POST /products/            (el alta de siempre, con el borrador corregido)
 ```
@@ -97,6 +101,18 @@ Tres cosas que definen la integración:
 **El borrador no inventa.** `categoria` y `stock` no salen de una etiqueta, así que llegan vacíos: rellenarlos con algo plausible sería peor que dejarlos vacíos, porque el usuario confirma el formulario sin releerlo y termina cargando un dato que nadie leyó de la foto. Si un texto no entra en el máximo del formulario (`nombre`, 20 caracteres) se recorta por palabra y se avisa en `advertencias`.
 
 `needs_review` viene en `true` cuando algún campo clave no llega al 0,85 que fija la propuesta. No bloquea el alta: avisa que conviene mirar antes de confirmar.
+
+#### Polling y Concurrencia
+
+Mientras el escaneo espera, `GET /products/scan/{job_id}` devuelve `queue_position` y `estimated_wait_seconds`: la app debería mostrarlos («3º de 7, ~2 min») en vez de un spinner. A dos documentos pesados por minuto, una fila de diez son cuatro minutos y medio, y un spinner mudo ahí se lee como una app rota.
+
+El escaneo puede volver **`429`** por dos motivos, los dos con `Retry-After`: el usuario agotó su cupo del minuto (60 códigos de barras, 10 etiquetas o vencimientos, 4 comprobantes) o la cola del módulo ya es más larga que la paciencia. La app debería reintentar recién cuando ese header lo indique.
+
+Consultar cada **medio segundo** alcanza: un código de barras o un sello se resuelven en 2-3 s, un ticket puede llevar decenas. El escaneo **sólo lo ve quien lo creó** — el coordinador guarda el `sub` que lo encoló y responde `404` a cualquier otro, así que un `job_id` filtrado no expone el ticket de nadie.
+
+Del lado de este backend, las llamadas al coordinador van por un **pool de conexiones compartido** en vez de abrir una por request como el resto del backend. Es deliberado: con el polling, un solo producto son decenas de conexiones nuevas, y con varios clientes a la vez son cientos por minuto.
+
+Varios clientes escaneando simultáneamente no se bloquean entre sí: el worker del OCR procesa varios jobs a la vez, así que un código de barras enviado detrás de tres tickets se resuelve igual en segundos. El detalle está en el README de `ocr_service`.
 
 ### Health
 
