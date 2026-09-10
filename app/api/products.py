@@ -112,12 +112,14 @@ def _get_user(user_id: int, db: Session) -> AuthUser:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
     return user
 
-def _create_alert(product: Product, alert_type: str, alert_level: str, db: Session) -> None:
+def _create_alert(product: Product, alert_type: str, alert_level: str, db: Session, units_wasted: int, stockout_date: int) -> None:
     alert = Alert(
         user_id=UUID(product.user_id),
         product_id=product.id,
         type=alert_type,
         level=alert_level,
+        units_wasted=units_wasted,
+        days_until_stockout=stockout_date
     )
     db.add(alert)
     db.commit()
@@ -202,7 +204,7 @@ async def _check_product_state(
                 print(f"\n\nSe actualizó alerta de tipo 'expiry' a nivel 'critical' para el producto '{product.nombre}'\n\n")
                 _notificate_expirancy(user.firebase_token, product, expirancy_days, user.email)
         elif expirancy_days < expirancy_warning:
-            _create_alert(product, "expiry", "warning" if expirancy_days > 1 else "critical", db)
+            _create_alert(product, "expiry", "warning" if expirancy_days > 1 else "critical", db, None, None)
             _notificate_expirancy(user.firebase_token, product, expirancy_days, user.email)
 
     if not settings.ML_SERVICE_URL:
@@ -246,7 +248,7 @@ async def _check_product_state(
             # decide entre "compraste de más" o "compraste de menos"
             if not stock_increased and days_until_stockout is not None and days_until_stockout < coverage_threshold:
                 _delete_alert(product, "stock_low_coverage", db)
-                _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db)
+                _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db, None, days_until_stockout)
                 _notificate_low_coverage(user.firebase_token, product, days_until_stockout, user.email)
 
             # Alerta de ritmo lento vs. vencimiento
@@ -261,7 +263,7 @@ async def _check_product_state(
                     units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
                     if units_wasted > 0:
                         _delete_alert(product, "slow_pace", db)
-                        _create_alert(product, "slow_pace", "warning", db)
+                        _create_alert(product, "slow_pace", "warning", db, units_wasted, None)
                         _notificate_slow_pace(user.firebase_token, product, days_until_expiry, units_wasted, user.email)
 
             return result
@@ -412,12 +414,8 @@ async def create_product(
             coverage_threshold = existing.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
             overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
             if days_until_stockout is not None and days_until_stockout > overstock_threshold:
-                _delete_alert(existing, "overstock", db)
-                _create_alert(existing, "overstock", "warning", db)
                 _notificate_overstock(user.firebase_token, existing, days_until_stockout, user.email)
             elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
-                _delete_alert(existing, "understock", db)
-                _create_alert(existing, "understock", "warning" if days_until_stockout > 1 else "critical", db)
                 _notificate_understock(user.firebase_token, existing, days_until_stockout, user.email)
         return ProductResponse.model_validate(existing, from_attributes=True).model_copy(update={"merged": True})
 

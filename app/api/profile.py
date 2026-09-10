@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, UserProfile
+from app.models.user import AuthUser
 from app.schemas.user import ProfileResponse, ProfileUpdate, NotificationToken
 
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -62,3 +63,34 @@ async def update_profile(
     db.commit()
     db.refresh(profile)
     return _to_response(user_id, current_user.get("email"), profile)
+
+@router.post("/register_notification_token", status_code=200)
+async def register_token(
+    data: NotificationToken,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    user_id = current_user["sub"]
+    auth_user = db.query(AuthUser).filter(AuthUser.id == user_id).first()
+    if not auth_user:
+        return {"message": "User not found"}
+    auth_user.firebase_token = data.token
+    db.commit()
+    db.refresh(auth_user)
+    print(f"Registered notification token for user {user_id}: {data.token}")
+    return {"message": "Token registered successfully"}
+
+@router.delete("/unregister_notification_token", status_code=200)
+async def unregister_token(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    user_id = current_user["sub"]
+    auth_user = db.query(AuthUser).filter(AuthUser.id == user_id).first()
+    if not auth_user:
+        return {"message": "User not found"}
+    auth_user.firebase_token = None
+    db.commit()
+    db.refresh(auth_user)
+    print(f"Unregistered notification token for user {user_id}")
+    return {"message": "Token unregistered successfully"}

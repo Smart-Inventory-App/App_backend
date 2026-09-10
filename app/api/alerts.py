@@ -25,6 +25,8 @@ async def get_alerts(current_user=Depends(get_current_user), db: Session = Depen
             product_id=alert[0].product_id,
             type=alert[0].type,
             level=alert[0].level,
+            units_wasted=alert[0].units_wasted,
+            days_until_stockout=alert[0].days_until_stockout,
             image_url=alert[4] if alert[4] else None,
             product_name=alert[1] if alert[1] else None,
             product_stock=alert[2] if alert[2] else None,
@@ -48,6 +50,8 @@ async def get_critical_alerts(current_user=Depends(get_current_user), db: Sessio
             product_id=alert[0].product_id,
             type=alert[0].type,
             level=alert[0].level,
+            units_wasted=alert[0].units_wasted,
+            days_until_stockout=alert[0].days_until_stockout,
             image_url=alert[4] if alert[4] else None,
             product_name=alert[1] if alert[1] else None,
             product_stock=alert[2] if alert[2] else None,
@@ -61,7 +65,7 @@ async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session 
     alerts = (
         db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
             .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user["sub"], Alert.type == "expiry")
+            .filter(Alert.user_id == current_user["sub"], Alert.type.in_(["expiry", "slow_pace"]))
             .all()
         )
     return [
@@ -71,6 +75,8 @@ async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session 
             product_id=alert[0].product_id,
             type=alert[0].type,
             level=alert[0].level,
+            units_wasted=alert[0].units_wasted,
+            days_until_stockout=alert[0].days_until_stockout,
             image_url=alert[4] if alert[4] else None,
             product_name=alert[1] if alert[1] else None,
             product_stock=alert[2] if alert[2] else None,
@@ -80,11 +86,11 @@ async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session 
     ]
 
 @router.get("/stock_alerts", response_model=list[AlertResponse])
-async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+async def get_stock_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     alerts = (
         db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
             .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user["sub"], Alert.type == "stock")
+            .filter(Alert.user_id == current_user["sub"], Alert.type == "stock_low_coverage")
             .all()
         )
     return [
@@ -94,6 +100,8 @@ async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session 
             product_id=alert[0].product_id,
             type=alert[0].type,
             level=alert[0].level,
+            units_wasted=alert[0].units_wasted,
+            days_until_stockout=alert[0].days_until_stockout,
             image_url=alert[4] if alert[4] else None,
             product_name=alert[1] if alert[1] else None,
             product_stock=alert[2] if alert[2] else None,

@@ -11,6 +11,8 @@ class AlertResponse(BaseModel):
     product_id: int
     type: str
     level: str
+    units_wasted: Optional[int] = None
+    days_until_stockout: Optional[int] = None
     image_url: Optional[str] = None
     product_name: Optional[str] = None
     product_stock: Optional[int] = None

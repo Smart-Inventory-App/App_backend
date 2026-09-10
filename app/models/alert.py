@@ -12,3 +12,5 @@ class Alert(Base):
     product_id = Column(Integer, ForeignKey("products.id"))
     type = Column(String(50), nullable=False)
     level = Column(String(50), nullable=False)
+    units_wasted = Column(Integer, nullable=True)
+    days_until_stockout = Column(Integer, nullable=True)

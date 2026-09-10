@@ -4,6 +4,8 @@ configurada coincide con la hora UTC actual.
 """
 import logging
 from datetime import date, datetime, timezone
+from uuid import UUID
+from sqlalchemy.orm import Session
 
 import httpx
 
@@ -14,10 +16,33 @@ from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
 from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, UserProfile
 from app.models.user import AuthUser
+from app.models.alert import Alert
 
 logger = logging.getLogger(__name__)
 notification_service = NotificationService(api_url=settings.NOTIFICATION_SERVICE_URL)
 
+def _create_alert(product: Product, alert_type: str, alert_level: str, db: Session, units_wasted: int, stockout_date: int) -> None:
+    alert = Alert(
+        user_id=UUID(product.user_id),
+        product_id=product.id,
+        type=alert_type,
+        level=alert_level,
+        units_wasted=units_wasted,
+        days_until_stockout=stockout_date
+    )
+    db.add(alert)
+    db.commit()
+    db.refresh(alert)
+    print(f"\n\nSe creó alerta de tipo '{alert_type}' y nivel '{alert_level}' para el producto '{product.nombre}'\n\n")
+
+def _delete_alert(product: Product, alert_type: str, db: Session) -> None:
+    db.query(Alert).filter(
+        Alert.user_id == UUID(product.user_id),
+        Alert.product_id == product.id,
+        Alert.type == alert_type,
+    ).delete()
+    db.commit()
+    print(f"\n\nSe eliminó alerta de tipo '{alert_type}' para el producto '{product.nombre}'\n\n")
 
 async def _ml_predict(events: list, product_data: dict) -> dict | None:
     """Llama al ML y retorna {daily_rate, days_until_stockout, stage} o None."""
@@ -94,6 +119,8 @@ async def run_daily_coverage_check(
                 if product.vencimiento:
                     days_to_expiry = (product.vencimiento - date.today()).days
                     if 0 <= days_to_expiry < expiry_threshold:
+                        _delete_alert(product, "expiry", db)
+                        _create_alert(product, "expiry", "warning" if days_to_expiry > 1 else "critical", db, None, None)
                         notification_service.send_notification(
                             user.firebase_token,
                             "Producto próximo a vencerse",
@@ -124,6 +151,8 @@ async def run_daily_coverage_check(
                     # Alerta de bajo stock
                     if days_until_stockout is not None and days_until_stockout < coverage_threshold:
                         label = "día" if days_until_stockout == 1 else "días"
+                        _delete_alert(product, "stock_low_coverage", db)
+                        _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db, None, days_until_stockout)
                         notification_service.send_notification(
                             user.firebase_token,
                             "Stock por agotarse",
@@ -143,6 +172,8 @@ async def run_daily_coverage_check(
                         if 0 < days_until_expiry < days_until_stockout:
                             units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
                             if units_wasted > 0:
+                                _delete_alert(product, "slow_pace", db)
+                                _create_alert(product, "slow_pace", "warning", db, units_wasted, None)
                                 notification_service.send_notification(
                                     user.firebase_token,
                                     "Riesgo de vencimiento por bajo consumo",
