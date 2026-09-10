@@ -22,6 +22,10 @@ def ocr_transport(monkeypatch):
     def install(handler):
         captured = {}
 
+        # El cliente está memoizado: hay que descartar el que quedó de otro test
+        # para que se construya uno nuevo sobre el transporte falso.
+        ocr_client._client = None
+
         def record(request: httpx.Request) -> httpx.Response:
             captured["request"] = request
             return handler(request)
@@ -225,6 +229,25 @@ async def test_coordinator_error_keeps_its_status_code(ocr_transport, monkeypatc
     assert exc.value.detail == "El archivo está vacío"
 
 
+async def test_retry_after_survives_the_proxy(ocr_transport, monkeypatch):
+    # Es el unico dato que le dice a la app cuando volver a intentar: si se
+    # pierde acá, el cliente reintenta a ciegas contra un servicio que pidió
+    # que esperara.
+    monkeypatch.setattr(ocr_client.settings, "OCR_SERVICE_URL", "http://ocr:8003")
+    ocr_transport(lambda _: httpx.Response(
+        429, json={"detail": "Alcanzaste el máximo"}, headers={"Retry-After": "60"}
+    ))
+
+    with pytest.raises(HTTPException) as exc:
+        await ocr_client.scan(
+            content=b"x", filename="x.jpg", content_type="image/jpeg",
+            doc_type="receipt", token="t",
+        )
+
+    assert exc.value.status_code == 429
+    assert exc.value.headers == {"Retry-After": "60"}
+
+
 async def test_an_unreachable_coordinator_is_reported_as_unavailable(
     ocr_transport, monkeypatch
 ):
@@ -249,7 +272,7 @@ async def test_without_a_configured_url_the_scan_is_unavailable(monkeypatch):
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
 
-def test_upload_returns_the_scan_id(client, monkeypatch):
+def test_upload_of_a_heavy_document_is_queued(client, monkeypatch):
     async def fake_scan(**kwargs):
         assert kwargs["doc_type"] == "expiry_date"
         assert kwargs["token"] == "token-de-prueba"
@@ -265,7 +288,70 @@ def test_upload_returns_the_scan_id(client, monkeypatch):
     )
 
     assert resp.status_code == 202
-    assert resp.json() == {"job_id": "job-1", "status": "queued"}
+    assert resp.json()["job_id"] == "job-1"
+    assert resp.json()["status"] == "queued"
+    assert resp.json()["result"] is None
+
+
+def test_a_barcode_comes_back_resolved_in_the_same_call(client, monkeypatch):
+    # No pasa por un motor: encolarlo sería pagar Cloudinary, la cola y el
+    # polling por un trabajo de 0,2 s.
+    queued = []
+
+    async def fake_sync(**kwargs):
+        assert kwargs["doc_type"] == "barcode"
+        return {"doc_type": "barcode", "result": {
+            "fields": {
+                "codigo": field("7794640172021", 1.0),
+                "pais_registro": field("Argentina", 1.0),
+            },
+            "needs_review": False,
+            "document_confidence": 1.0,
+        }}
+
+    async def should_not_run(**kwargs):
+        queued.append(kwargs)
+        return {"job_id": "no", "status": "queued"}
+
+    monkeypatch.setattr(ocr_client, "sync_scan", fake_sync)
+    monkeypatch.setattr(ocr_client, "scan", should_not_run)
+
+    resp = client.post(
+        "/products/scan",
+        files={"file": ("codigo.jpg", b"\xff\xd8foto", "image/jpeg")},
+        data={"doc_type": "barcode"},
+        headers=AUTH,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "done"
+    assert body["job_id"] is None, "no hay nada que consultar después"
+    assert body["result"]["draft"]["codigo_barras"] == "7794640172021"
+    assert queued == [], "el código de barras no debe pasar por la cola"
+
+
+def test_a_queued_scan_reports_its_place_in_line(client, monkeypatch):
+    # Sin esto la app sólo puede mostrar un spinner: a dos documentos pesados por
+    # minuto, una fila de diez son cuatro minutos y medio.
+    async def fake_job(job_id, token):
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "doc_type": "receipt",
+            "result": None,
+            "queue_position": 3,
+            "estimated_wait_seconds": 81,
+            "created_at": "2026-09-09T10:00:00",
+            "updated_at": "2026-09-09T10:00:00",
+        }
+
+    monkeypatch.setattr(ocr_client, "get_job", fake_job)
+
+    body = client.get("/products/scan/job-1", headers=AUTH).json()
+
+    assert body["queue_position"] == 3
+    assert body["estimated_wait_seconds"] == 81
 
 
 def test_unsupported_format_is_rejected_before_the_network(client):
