@@ -12,6 +12,7 @@ class ProductCreate(BaseModel):
     descripcion: Optional[str] = Field(None, max_length=400)
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
+    codigo_barras: Optional[str] = None
     stock_minimo: Optional[int] = Field(None, gt=0)
     dias_alerta_vencimiento: Optional[int] = Field(None, gt=0)
 
@@ -25,6 +26,7 @@ class ProductUpdate(BaseModel):
     descripcion: Optional[str] = Field(None, max_length=400)
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
+    codigo_barras: Optional[str] = None
     stock_minimo: Optional[int] = Field(None, gt=0)
     dias_alerta_vencimiento: Optional[int] = Field(None, gt=0)
 
@@ -40,6 +42,7 @@ class ProductResponse(BaseModel):
     descripcion: Optional[str] = None
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
+    codigo_barras: Optional[str] = None
     stock_minimo: Optional[int] = None
     dias_alerta_vencimiento: Optional[int] = None
     created_at: Optional[datetime] = None
