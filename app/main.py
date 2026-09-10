@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.api import transactions, health, internal, products, profile, scan
+from app.services import ocr_client
 from app.services.alert_job import run_daily_coverage_check
 
 _scheduler = AsyncIOScheduler()
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
     _scheduler.start()
     yield
     _scheduler.shutdown()
+    await ocr_client.close()
 
 
 # Create FastAPI app

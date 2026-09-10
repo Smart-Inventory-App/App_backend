@@ -14,11 +14,6 @@ class ScanDocType(str, Enum):
     BARCODE = "barcode"
 
 
-class ScanCreated(BaseModel):
-    job_id: str
-    status: str = "queued"
-
-
 class ProductDraft(BaseModel):
     """
     Los campos de `ProductCreate` que el OCR pudo leer.
@@ -87,8 +82,29 @@ class ScanResult(BaseModel):
 
 
 class ScanState(BaseModel):
-    job_id: str
+    """
+    Estado de un escaneo, y su resultado cuando ya está.
+
+    Es la única forma que devuelven los dos endpoints. Un código de barras se
+    decodifica en el momento y vuelve con `status: "done"` y el borrador adentro,
+    sin `job_id`: no hay nada que consultar después. Los demás tipos vuelven en
+    `queued` y la app consulta hasta que pasan a `done` o `failed`. La regla para
+    el cliente es una sola: si `status` es `done`, ya tenés el resultado.
+    """
+
+    job_id: Optional[str] = None
     status: str
     doc_type: ScanDocType
     result: Optional[ScanResult] = None
     error: Optional[str] = None
+
+    queue_position: Optional[int] = Field(
+        default=None, description="Lugar en la fila, empezando en 1. Sólo mientras espera."
+    )
+    estimated_wait_seconds: Optional[int] = Field(
+        default=None,
+        description=(
+            "Cuánto falta, estimado. Está para que la app muestre «3º de 7, ~2 min» "
+            "en vez de un spinner sin información."
+        ),
+    )

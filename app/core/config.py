@@ -40,7 +40,10 @@ class Settings(BaseSettings):
 
     # OCR module service URL and timeout
     OCR_SERVICE_URL: str = ""
-    OCR_TIMEOUT_SECONDS: float = 30.0
+    # Cubre la subida de la foto y el encolado, no el reconocimiento. Tiene que
+    # ser mayor que el timeout con el que ocr_service sube al storage (30 s): si
+    # cortamos antes, la imagen temporal queda subida y sin nadie que la borre.
+    OCR_TIMEOUT_SECONDS: float = 60.0
 
     # Firebase
     FIREBASE_CREDENTIALS: str
