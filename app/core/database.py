@@ -8,6 +8,7 @@ engine = create_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
     future=True,
+    pool_pre_ping=True,
 )
 
 # Create session factory
