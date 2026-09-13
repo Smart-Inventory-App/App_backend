@@ -92,7 +92,13 @@ async def run_daily_coverage_check(
             if target_user_id is not None and str(user_id) != str(target_user_id):
                 continue
 
-            user = db.query(AuthUser).filter(AuthUser.id == user_id).first()
+            # products.user_id es String libre y puede traer basura de seeds viejos
+            try:
+                uid = UUID(str(user_id))
+            except ValueError:
+                continue
+
+            user = db.query(AuthUser).filter(AuthUser.id == uid).first()
             if not user or not user.firebase_token:
                 continue
 

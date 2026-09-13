@@ -15,5 +15,9 @@ class NotificationService:
             'token': user_token,
             'email': user_email
         }
-        response = requests.post(f"{self.api_url}/send_notification", json=payload)
-        return response.status_code
+        try:
+            response = requests.post(f"{self.api_url}/send_notification", json=payload, timeout=10)
+            return response.status_code
+        except requests.RequestException:
+            # El push es best-effort: que falle no debe romper la operación del usuario
+            return None
