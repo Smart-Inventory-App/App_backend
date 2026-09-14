@@ -71,6 +71,8 @@ class ProfileUpdate(BaseModel):
     expiryDaysThreshold: Optional[int] = Field(None, gt=0)
     alertCheckHour: Optional[int] = Field(None, ge=0, le=23)
 
+class NotificationToken(BaseModel):
+    token: str
 
 # Keep legacy schemas so existing code that imports them doesn't break
 class UserBase(BaseModel):

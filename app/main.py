@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.api import transactions, health, internal, products, profile, scan
+from app.api import transactions, health, internal, products, profile, scan, alerts
 from app.services import ocr_client
 from app.services.alert_job import run_daily_coverage_check
 
@@ -46,6 +46,7 @@ app.include_router(transactions.router)
 app.include_router(scan.router)
 app.include_router(products.router)
 app.include_router(profile.router)
+app.include_router(alerts.router)
 app.include_router(internal.router)
 
 
