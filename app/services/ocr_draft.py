@@ -155,7 +155,13 @@ def _match_by_barcode(draft: ProductDraft, code: Optional[str], products: list[P
     """
     if not code:
         return
-    same = [product for product in products if product.codigo_barras == code]
+    # Dos lotes del mismo producto comparten código y difieren en el vencimiento.
+    # Van primero los que vencen antes —y los sin fecha al final—, que es el que
+    # conviene sacar primero y el mismo orden que usa la búsqueda por código.
+    same = sorted(
+        (product for product in products if product.codigo_barras == code),
+        key=lambda product: (product.vencimiento is None, product.vencimiento or date.max, product.id),
+    )
     draft.coincidencias = [_to_match(product, 1.0, by_barcode=True) for product in same]
     if same:
         draft.coincidencia_id = same[0].id

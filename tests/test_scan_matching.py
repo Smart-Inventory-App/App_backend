@@ -254,3 +254,20 @@ def test_an_empty_receipt_is_rejected(client, db):
     resp = client.post("/products/scan/salida", json={"items": []}, headers=AUTH)
 
     assert resp.status_code == 422
+
+
+def test_with_several_lots_of_the_same_barcode_the_earliest_expiry_comes_first():
+    from datetime import date
+
+    inventory = [
+        product(id=1, nombre="Ibuprofeno", codigo_barras="7794640172021", vencimiento=date(2028, 6, 1)),
+        product(id=2, nombre="Ibuprofeno", codigo_barras="7794640172021", vencimiento=None),
+        product(id=3, nombre="Ibuprofeno", codigo_barras="7794640172021", vencimiento=date(2026, 12, 1)),
+    ]
+
+    result = ocr_draft.to_scan_result(ScanDocType.BARCODE, {
+        "fields": {"codigo": field("7794640172021", 1.0)},
+    }, inventory)
+
+    assert [m.id for m in result.draft.coincidencias] == [3, 1, 2]
+    assert result.draft.coincidencia_id == 3
