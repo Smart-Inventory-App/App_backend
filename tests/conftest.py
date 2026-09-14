@@ -7,10 +7,12 @@ from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.core.database import Base, get_db
 from app.core.security import get_current_user
+from app.models.alert import Alert
 from app.models.user import AuthUser
 
-# SQLite has no UUID type: without this, create_all cannot build auth_users
+# SQLite has no UUID type: without this, create_all cannot build these tables.
 AuthUser.__table__.c.id.type = String(36)
+Alert.__table__.c.user_id.type = String(36)
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
 
