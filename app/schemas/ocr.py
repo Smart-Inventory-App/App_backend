@@ -14,6 +14,32 @@ class ScanDocType(str, Enum):
     BARCODE = "barcode"
 
 
+class ProductMatch(BaseModel):
+    """Un producto del inventario del usuario que podría ser el escaneado."""
+
+    id: int
+    nombre: str
+    marca: Optional[str] = None
+    categoria: Optional[str] = None
+    ubicacion: Optional[str] = None
+    vencimiento: Optional[date] = None
+    stock: int = 0
+    codigo_barras: Optional[str] = None
+
+    score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cuánto se parece al texto leído. 1.0 es coincidencia exacta y también "
+            "lo que devuelve un código de barras, que no se parece: es el mismo producto."
+        ),
+    )
+    por_codigo: bool = Field(
+        default=False, description="La coincidencia salió del código de barras, no del nombre."
+    )
+
+
 class ProductDraft(BaseModel):
     """
     Los campos de `ProductCreate` que el OCR pudo leer.
@@ -30,8 +56,8 @@ class ProductDraft(BaseModel):
     vencimiento: Optional[date] = None
     descripcion: Optional[str] = Field(default=None, max_length=400)
 
-    # No son campos de `ProductCreate` (la tabla de productos no los guarda),
-    # pero identifican al producto sin ambigüedad.
+    # El código de barras sí es un campo del alta —identifica al producto sin
+    # ambigüedad—; el país de registro es sólo informativo y no se guarda.
     codigo_barras: Optional[str] = None
     pais_registro: Optional[str] = Field(
         default=None,
@@ -41,6 +67,25 @@ class ProductDraft(BaseModel):
     confianzas: dict[str, float] = Field(
         default_factory=dict,
         description="Confianza por campo, de 0 a 1. Bajo 0.85 conviene mostrarlo como sugerencia.",
+    )
+
+    texto_leido: Optional[str] = Field(
+        default=None,
+        description=(
+            "El nombre tal como lo leyó el OCR, sin recortar ni corregir. Es lo que se "
+            "muestra para editar cuando no hay ninguna coincidencia."
+        ),
+    )
+    coincidencias: list[ProductMatch] = Field(
+        default_factory=list,
+        description="Productos del usuario que podrían ser éste, de mejor a peor.",
+    )
+    coincidencia_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "La coincidencia lo bastante buena como para preseleccionarla. Sigue siendo "
+            "una sugerencia: la app la deja cambiar."
+        ),
     )
 
 
@@ -80,6 +125,15 @@ class ScanResult(BaseModel):
         description="Qué pasó al procesar y cambia cómo leer el resultado (motor caído, campo recortado).",
     )
 
+    sin_coincidencia: int = Field(
+        default=0,
+        description=(
+            "Renglones del comprobante que no se pudieron atar a ningún producto del "
+            "usuario. La salida los necesita para avisar cuántos quedaron afuera en "
+            "vez de descargar de menos en silencio."
+        ),
+    )
+
 
 class ScanState(BaseModel):
     """
@@ -108,3 +162,23 @@ class ScanState(BaseModel):
             "en vez de un spinner sin información."
         ),
     )
+
+
+class SalidaOCRItem(BaseModel):
+    product_id: int
+    quantity: int = Field(..., gt=0)
+
+
+class SalidaOCRRequest(BaseModel):
+    """Descarga de varios productos leídos de un mismo comprobante."""
+
+    items: list[SalidaOCRItem] = Field(..., min_length=1)
+    comercio: Optional[str] = Field(
+        default=None, description="Si el OCR lo leyó, queda en el motivo del movimiento."
+    )
+
+
+class SalidaOCRResult(BaseModel):
+    procesados: int
+    fallidos: int
+    errores: list[str] = Field(default_factory=list)

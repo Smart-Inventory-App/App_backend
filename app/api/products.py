@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from typing import Literal, Optional
 
 from app.models.alert import Alert
+from app.core import barcode
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -362,6 +363,50 @@ async def suggest_products(
     ]
 
 
+@router.get("/by-barcode/{codigo}", response_model=Optional[ProductSuggestion])
+async def product_by_barcode(
+    codigo: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Qué producto del usuario tiene este código de barras, si alguno.
+
+    Devuelve `null` en vez de 404 porque no encontrarlo es un resultado normal:
+    es lo que le dice a la app que abra un alta nueva con el código ya cargado.
+
+    El código se normaliza antes de buscar por la misma razón por la que se
+    normaliza al guardarlo: el mismo envase leído por el escáner y escrito a mano
+    tiene que encontrarse a sí mismo.
+    """
+    try:
+        normalizado = barcode.normalizar(codigo)
+    except barcode.CodigoInvalido as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    if not normalizado:
+        return None
+
+    product = (
+        db.query(Product)
+        .filter(Product.user_id == current_user["sub"], Product.codigo_barras == normalizado)
+        .order_by(Product.vencimiento.asc().nullslast(), Product.id.asc())
+        .first()
+    )
+    if not product:
+        return None
+
+    return ProductSuggestion(
+        id=product.id,
+        nombre=product.nombre,
+        marca=product.marca,
+        categoria=product.categoria,
+        ubicacion=product.ubicacion,
+        vencimiento=product.vencimiento,
+        stock=product.stock,
+        stock_minimo=product.stock_minimo,
+        dias_alerta_vencimiento=product.dias_alerta_vencimiento,
+    )
+
+
 @router.get("/defaults", response_model=ProductDefaults)
 async def get_defaults(
     current_user: dict = Depends(get_current_user),
@@ -390,6 +435,8 @@ async def create_product(
     existing = _find_matching_product(user_id, data.nombre, data.marca, data.vencimiento, db)
     if existing:
         existing.stock += data.stock
+        if data.codigo_barras and not existing.codigo_barras:
+            existing.codigo_barras = data.codigo_barras
         db.add(ConsumptionEvent(
             product_id=existing.id,
             user_id=user_id,

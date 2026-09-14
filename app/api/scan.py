@@ -1,9 +1,27 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+import logging
+from typing import Any
 
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.api import products as products_api
+from app.core.database import get_db
 from app.core.security import get_current_user
-from app.schemas.ocr import ScanDocType, ScanState
+from app.models.consumption import ConsumptionEvent
+from app.models.product import Product
+from app.schemas.ocr import (
+    SalidaOCRRequest,
+    SalidaOCRResult,
+    ScanDocType,
+    ScanResult,
+    ScanState,
+)
 from app.services import ocr_client, ocr_draft
 from app.utils.bearer import get_bearer_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/products/scan", tags=["products-scan"])
 
@@ -13,6 +31,10 @@ ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 # acá ahorra el viaje de ida y el mensaje de error es más claro.
 MAX_BYTES = 10 * 1024 * 1024
 
+# Motivo con el que queda asentada en el ledger una salida leída de un
+# comprobante. Es el mismo texto que usa el backoffice.
+MOTIVO_COMPROBANTE = "Documento Comercial"
+
 @router.post("", response_model=ScanState)
 async def create_scan(
     response: Response,
@@ -20,6 +42,7 @@ async def create_scan(
     doc_type: ScanDocType = Form(default=ScanDocType.PRODUCT_LABEL),
     token: str = Depends(get_bearer_token),
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Manda la foto al módulo de OCR.
@@ -49,7 +72,7 @@ async def create_scan(
             return ScanState(
                 status="done",
                 doc_type=doc_type,
-                result=ocr_draft.to_scan_result(doc_type, reading["result"]),
+                result=await _translate(doc_type, reading["result"], db, current_user),
             )
 
         created = await ocr_client.scan(**envio)
@@ -69,6 +92,7 @@ async def get_scan(
     job_id: str,
     token: str = Depends(get_bearer_token),
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Estado del escaneo y, cuando termina, el borrador para el formulario.
@@ -88,11 +112,131 @@ async def get_scan(
         job_id=job["job_id"],
         status=job["status"],
         doc_type=doc_type,
-        result=ocr_draft.to_scan_result(doc_type, result) if result else None,
+        result=await _translate(doc_type, result, db, current_user) if result else None,
         error=job.get("error"),
         queue_position=job.get("queue_position"),
         estimated_wait_seconds=job.get("estimated_wait_seconds"),
     )
+
+
+@router.post("/salida", response_model=SalidaOCRResult)
+async def salida_from_receipt(
+    data: SalidaOCRRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Descarga varios productos de un mismo comprobante.
+
+    Llega con los `product_id` que el usuario ya confirmó contra las
+    coincidencias, no con nombres: volver a emparejar acá sería decidir de nuevo
+    algo que la persona ya decidió mirando la foto.
+
+    El movimiento queda como consumo, con el motivo `Documento Comercial`, y cada
+    renglón se procesa por su cuenta: que a uno le falte stock no puede dejar el
+    comprobante a medio aplicar sin que se sepa cuál falló.
+
+    Después de descontar se evalúan las alertas de cada producto, igual que en
+    una salida normal (`POST /products/{id}/events`). Es lo que distingue a este
+    endpoint de su par del backoffice, que no notifica.
+    """
+    user_id = current_user["sub"]
+    actor_email = current_user.get("email")
+    note = f"{MOTIVO_COMPROBANTE} - {data.comercio}" if data.comercio else MOTIVO_COMPROBANTE
+
+    processed = 0
+    errors: list[str] = []
+    discharged: list[Product] = []
+
+    for item in data.items:
+        product = (
+            db.query(Product)
+            .filter(Product.id == item.product_id, Product.user_id == user_id)
+            .first()
+        )
+        if not product:
+            errors.append(f"Producto #{item.product_id}: no encontrado")
+            continue
+        if item.quantity > product.stock:
+            errors.append(
+                f'Producto #{item.product_id}: "{product.nombre}" tiene {product.stock} '
+                f"unidades y pediste sacar {item.quantity}"
+            )
+            continue
+
+        db.add(ConsumptionEvent(
+            product_id=product.id,
+            user_id=product.user_id,
+            quantity=item.quantity,
+            event_type="consumed",
+            actor_email=actor_email,
+            note=note,
+        ))
+        product.stock = max(0, product.stock - item.quantity)
+        try:
+            db.commit()
+        except SQLAlchemyError as exc:
+            db.rollback()
+            errors.append(f"Producto #{item.product_id}: no se pudo registrar la salida ({exc})")
+            continue
+        db.refresh(product)
+
+        products_api._log_activity(
+            db, "product_updated", actor_email, user_id, actor_email,
+            f'{actor_email or user_id} sacó {item.quantity} unidades de "{product.nombre}" '
+            f"({MOTIVO_COMPROBANTE}, stock: {product.stock}) desde la app",
+        )
+        processed += 1
+        discharged.append(product)
+
+    await _check_alerts(discharged, user_id, db)
+
+    return SalidaOCRResult(procesados=processed, fallidos=len(errors), errores=errors)
+
+
+async def _check_alerts(discharged: list[Product], user_id: str, db: Session) -> None:
+    """
+    Evalúa las alertas de los productos que efectivamente bajaron de stock.
+
+    Es best-effort a propósito: cuando esto corre, el stock ya se descontó y el
+    movimiento ya está en el ledger. Si alertar falla —el usuario no tiene fila
+    en `auth_users`, el servicio de notificaciones no responde— la salida sigue
+    siendo válida, y reportarla como fallida le haría creer al usuario que tiene
+    que repetirla.
+    """
+    if not discharged:
+        return
+    try:
+        user = products_api._get_user(user_id, db)
+        profile = products_api._get_or_create_profile(user_id, db)
+    except HTTPException:
+        logger.warning("Salida por comprobante sin alertas: el usuario %s no está en auth_users", user_id)
+        return
+
+    for product in discharged:
+        try:
+            await products_api._check_product_state(product, user, profile, db)
+        except Exception:
+            logger.exception("No se pudieron evaluar las alertas del producto %s", product.id)
+
+
+async def _translate(
+    doc_type: ScanDocType, result: dict[str, Any], db: Session, current_user: dict
+) -> ScanResult:
+    """Traduce la lectura y la empareja con el inventario, fuera del event loop.
+
+    Emparejar es leer los productos del usuario y compararlos texto contra texto:
+    consultas bloqueantes y CPU. Hacerlo dentro de un handler `async` frenaría a
+    los demás escaneos que están esperando al coordinador.
+    """
+    return await run_in_threadpool(_translate_sync, doc_type, result, db, current_user["sub"])
+
+
+def _translate_sync(
+    doc_type: ScanDocType, result: dict[str, Any], db: Session, user_id: str
+) -> ScanResult:
+    inventory = db.query(Product).filter(Product.user_id == user_id).all()
+    return ocr_draft.to_scan_result(doc_type, result, inventory)
 
 
 async def _read_image(file: UploadFile) -> bytes:
