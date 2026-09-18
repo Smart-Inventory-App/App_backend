@@ -14,5 +14,6 @@ postgres_data
 .env
 
 # Testing
+.coverage
 # Base SQLite
 test.db
