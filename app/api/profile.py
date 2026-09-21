@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -8,6 +10,14 @@ from app.models.user import AuthUser
 from app.schemas.user import ProfileResponse, ProfileUpdate, NotificationToken
 
 router = APIRouter(prefix="/profile", tags=["profile"])
+
+
+def _as_uuid(value):
+    """`sub` del token a UUID. Devuelve None si no lo es, para que no haya match."""
+    try:
+        return UUID(str(value))
+    except ValueError:
+        return None
 
 
 def _get_or_create(user_id: str, db: Session) -> UserProfile:
@@ -71,7 +81,8 @@ async def register_token(
     db: Session = Depends(get_db)
 ):
     user_id = current_user["sub"]
-    auth_user = db.query(AuthUser).filter(AuthUser.id == user_id).first()
+    
+    auth_user = db.query(AuthUser).filter(AuthUser.id == _as_uuid(user_id)).first()
     if not auth_user:
         return {"message": "User not found"}
     auth_user.firebase_token = data.token
@@ -86,7 +97,8 @@ async def unregister_token(
     db: Session = Depends(get_db)
 ):
     user_id = current_user["sub"]
-    auth_user = db.query(AuthUser).filter(AuthUser.id == user_id).first()
+
+    auth_user = db.query(AuthUser).filter(AuthUser.id == _as_uuid(user_id)).first()
     if not auth_user:
         return {"message": "User not found"}
     auth_user.firebase_token = None
