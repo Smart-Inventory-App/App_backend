@@ -14,7 +14,7 @@ from app.core.database import SessionLocal
 from app.services.notifications import NotificationService
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
-from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, UserProfile
+from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, DEFAULT_USER_TYPE, UserProfile
 from app.models.user import AuthUser
 from app.models.alert import Alert
 
@@ -44,7 +44,7 @@ def _delete_alert(product: Product, alert_type: str, db: Session) -> None:
     db.commit()
     print(f"\n\nSe eliminó alerta de tipo '{alert_type}' para el producto '{product.nombre}'\n\n")
 
-async def _ml_predict(events: list, product_data: dict) -> dict | None:
+async def _ml_predict(events: list, product_data: dict, segment: str = DEFAULT_USER_TYPE) -> dict | None:
     """Llama al ML y retorna {daily_rate, days_until_stockout, stage} o None."""
     if not settings.ML_SERVICE_URL:
         return None
@@ -61,7 +61,7 @@ async def _ml_predict(events: list, product_data: dict) -> dict | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(
                 f"{settings.ML_SERVICE_URL}/models/predict-product",
-                json={"events": events_payload, "product": product_data},
+                json={"events": events_payload, "product": product_data, "segment": segment},
                 headers={"X-Internal-Token": settings.INTERNAL_SERVICE_TOKEN},
             )
         if r.status_code == 200:
@@ -92,7 +92,6 @@ async def run_daily_coverage_check(
             if target_user_id is not None and str(user_id) != str(target_user_id):
                 continue
 
-            # products.user_id es String libre y puede traer basura de seeds viejos
             try:
                 uid = UUID(str(user_id))
             except ValueError:
@@ -111,6 +110,7 @@ async def run_daily_coverage_check(
 
             users_processed += 1
 
+            user_segment = (profile.user_type if profile else None) or DEFAULT_USER_TYPE
             coverage_threshold = (profile.stock_minimo if profile else None) or DEFAULT_COVERAGE_DAYS
             expiry_threshold = (profile.dias_alerta_vencimiento if profile else None) or DEFAULT_DIAS_ALERTA_VENCIMIENTO
 
@@ -149,7 +149,7 @@ async def run_daily_coverage_check(
                     "categoria": product.categoria,
                     "nombre": product.nombre,
                 }
-                ml_result = await _ml_predict(events, product_data)
+                ml_result = await _ml_predict(events, product_data, segment=user_segment)
                 if ml_result:
                     days_until_stockout = ml_result.get("days_until_stockout")
                     daily_rate = ml_result.get("daily_rate")

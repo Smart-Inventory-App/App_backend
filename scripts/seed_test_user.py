@@ -1,14 +1,9 @@
 """
-Script para crear un usuario ficticio de prueba con productos e historial de
-consumo, diseñado para ejercitar las tres etapas del predictor ML
-(bayesian / moving_average / gbm) y disparar las alertas inteligentes.
+Crea un usuario de prueba con productos e historial de consumo para validar
+las alertas inteligentes.
 
 Uso:
     python3 scripts/seed_test_user.py [--auth-url URL] [--app-url URL]
-
-Crea usuario y productos vía API, y genera un .sql con los eventos de consumo
-backdateados (el endpoint POST /products/{id}/events siempre timestampea con
-now(), así que el historial no se puede cargar por HTTP).
 """
 import argparse
 import sys
@@ -32,57 +27,48 @@ PROFILE = {
     "alertCheckHour": 9,
 }
 
-# El predictor elige etapa según cantidad de eventos y días de historia
-# (ML/app/predictor/stage.py): <10 eventos o <28 días -> bayesian;
-# >=56 días -> gbm; en el medio -> moving_average.
-#
-# Para las etapas bayesian y moving_average la tasa es determinística:
-#   moving_average -> qty / every_days
-#   bayesian       -> (1 + total_unidades) / (7 + cantidad_eventos)
-# Para gbm la predice el modelo entrenado, así que el resultado depende
-# de la versión activa en el BackOffice.
 PRODUCTS = [
     {
         "nombre": "Leche Entera", "marca": "La Serenísima", "categoria": "Lácteos",
         "stock": 3, "stock_minimo": 10,
         "descripcion": "Consumo diario alto, stock bajo",
-        "events": {"qty": 1, "every_days": 1, "count": 60},  # gbm
+        "events": {"qty": 1, "every_days": 1, "count": 60},
     },
     {
         "nombre": "Yogur Natural", "marca": "Danone", "categoria": "Lácteos",
         "stock": 10, "stock_minimo": 8, "vencimiento_en_dias": 10,
         "descripcion": "Consumo lento con vencimiento cercano",
-        "events": {"qty": 1, "every_days": 5, "count": 13},  # gbm
+        "events": {"qty": 1, "every_days": 5, "count": 13},
     },
     {
         "nombre": "Arroz Largo", "marca": "Gallo", "categoria": "Cereales",
         "stock": 50, "stock_minimo": 10,
         "descripcion": "Consumo moderado, stock holgado",
-        "events": {"qty": 2, "every_days": 6, "count": 10},  # moving_average ~0.33/día
+        "events": {"qty": 2, "every_days": 6, "count": 10},
     },
     {
         "nombre": "Detergente", "marca": "Magistral", "categoria": "Limpieza",
         "stock": 5, "stock_minimo": 20,
         "descripcion": "Consumo medio, stock por agotarse",
-        "events": {"qty": 1, "every_days": 2, "count": 16},  # moving_average 0.5/día
+        "events": {"qty": 1, "every_days": 2, "count": 16},
     },
     {
         "nombre": "Fideos Spaghetti", "marca": "Matarazzo", "categoria": "Pastas",
         "stock": 5, "stock_minimo": 10,
         "descripcion": "Justo por encima del umbral — no debe alertar",
-        "events": {"qty": 1, "every_days": 4, "count": 10},  # moving_average 0.25/día
+        "events": {"qty": 1, "every_days": 4, "count": 10},
     },
     {
         "nombre": "Aceite Girasol", "marca": "Natura", "categoria": "Aceites",
         "stock": 200, "stock_minimo": 10,
         "descripcion": "Pocos eventos — cae al prior bayesiano",
-        "events": {"qty": 1, "every_days": 10, "count": 7},  # bayesian
+        "events": {"qty": 1, "every_days": 10, "count": 7},
     },
     {
         "nombre": "Café Molido", "marca": "La Virginia", "categoria": "Infusiones",
         "stock": 2, "stock_minimo": 5,
         "descripcion": "Historial mínimo, stock crítico",
-        "events": {"qty": 1, "every_days": 3, "count": 3},  # bayesian
+        "events": {"qty": 1, "every_days": 3, "count": 3},
     },
 ]
 
