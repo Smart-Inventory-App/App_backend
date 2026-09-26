@@ -105,9 +105,14 @@ def _log_activity(
     db.commit()
 
 
-def _get_user(user_id: int, db: Session) -> AuthUser:
+def _get_user(user_id: str, db: Session) -> AuthUser:
+    try:
+        uid = UUID(str(user_id))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
+
     user = db.query(AuthUser).filter(
-        AuthUser.id == user_id
+        AuthUser.id == uid
     ).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")

@@ -1,6 +1,8 @@
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
+
+UserType = Literal["individuo", "comercio"]
 
 
 class UserRegister(BaseModel):
@@ -61,6 +63,7 @@ class ProfileResponse(BaseModel):
     coverageDaysThreshold: int
     expiryDaysThreshold: int
     alertCheckHour: int
+    userType: UserType
 
 
 class ProfileUpdate(BaseModel):
@@ -70,6 +73,7 @@ class ProfileUpdate(BaseModel):
     coverageDaysThreshold: Optional[int] = Field(None, gt=0)
     expiryDaysThreshold: Optional[int] = Field(None, gt=0)
     alertCheckHour: Optional[int] = Field(None, ge=0, le=23)
+    userType: Optional[UserType] = None
 
 class NotificationToken(BaseModel):
     token: str

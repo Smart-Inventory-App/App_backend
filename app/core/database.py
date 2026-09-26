@@ -9,6 +9,7 @@ engine = create_engine(
     echo=settings.DEBUG,
     future=True,
     pool_pre_ping=True,
+    pool_recycle=1800,
 )
 
 # Create session factory
