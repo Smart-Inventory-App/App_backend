@@ -68,6 +68,24 @@ def test_an_empty_code_means_no_code(written):
     assert barcode.normalizar(written) is None
 
 
+def test_a_code_made_only_of_separators_also_means_no_code():
+    # No hay dígito inválido —son todos separadores permitidos— pero tampoco
+    # queda ningún número: es el mismo "no hay código" que una cadena vacía.
+    assert barcode.normalizar("- - -") is None
+
+
+def test_es_valido_is_true_for_a_correct_code():
+    assert barcode.es_valido("7794640172021") is True
+
+
+def test_es_valido_is_false_for_a_bad_checksum():
+    assert barcode.es_valido("7794640172020") is False
+
+
+def test_es_valido_is_false_when_there_is_no_code():
+    assert barcode.es_valido(None) is False
+
+
 # ── en el schema: ningún alta ni edición lo saltea ────────────────────────────
 
 def test_the_schema_stores_the_canonical_form():

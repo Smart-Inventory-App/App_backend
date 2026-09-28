@@ -9,7 +9,7 @@ os.environ.setdefault("INTERNAL_SERVICE_TOKEN", "test-internal-token")
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import String, create_engine
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.main import app
@@ -24,8 +24,8 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 
 Base.metadata.create_all(bind=engine)
 
-# El `sub` real es el UUID del usuario en `auth_users`, no un texto libre.
 TEST_USER = {"sub": "11111111-1111-4111-8111-111111111111", "email": "test@test.com"}
+TEST_USER_ID = TEST_USER["sub"]
 
 
 def override_get_db():
@@ -75,18 +75,3 @@ def db():
     session.close()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-
-
-def _ensure_test_user(session):
-    """Create the auth_users row that product endpoints look up to send push."""
-    if session.query(AuthUser).filter(AuthUser.id == TEST_USER_ID).first():
-        return
-    session.add(
-        AuthUser(
-            id=TEST_USER_ID,
-            email=TEST_USER["email"],
-            hashed_password="x",
-            is_active=True,
-        )
-    )
-    session.commit()

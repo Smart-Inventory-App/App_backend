@@ -113,6 +113,15 @@ def test_a_date_that_is_not_a_date_does_not_break_the_draft():
     assert result.draft.vencimiento is None
 
 
+def test_barcode_without_a_code_matches_nothing():
+    # El coordinador no pudo leer el código: no hay contra qué emparejar.
+    result = ocr_draft.to_scan_result(ScanDocType.BARCODE, {"fields": {}})
+
+    assert result.draft.codigo_barras is None
+    assert result.draft.coincidencias == []
+    assert result.draft.coincidencia_id is None
+
+
 def test_barcode_brings_the_gtin_and_its_country():
     result = ocr_draft.to_scan_result(ScanDocType.BARCODE, {
         "fields": {
