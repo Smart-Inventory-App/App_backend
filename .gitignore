@@ -17,3 +17,7 @@ postgres_data
 .coverage
 # Base SQLite
 test.db
+# Coverage
+.coverage.*
+coverage.xml
+htmlcov/
