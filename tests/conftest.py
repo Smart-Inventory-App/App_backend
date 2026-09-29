@@ -6,6 +6,7 @@ os.environ.setdefault("FIREBASE_CREDENTIALS", "{}")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("INTERNAL_SERVICE_TOKEN", "test-internal-token")
+os.environ.setdefault("ML_SERVICE_URL", "http://fake-ml-service")
 
 import pytest
 from fastapi.testclient import TestClient

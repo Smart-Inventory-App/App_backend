@@ -16,7 +16,7 @@ class NotificationService:
             'email': user_email
         }
         try:
-            response = requests.post(f"{self.api_url}/send_notification", json=payload, timeout=10)
+            response = requests.post(f"{self.api_url}/notification/send_notification", json=payload, timeout=10)
             return response.status_code
         except requests.RequestException:
             return None

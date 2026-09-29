@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.models.alert import Alert
@@ -15,7 +17,7 @@ async def get_alerts(current_user=Depends(get_current_user), db: Session = Depen
     alerts = (
         db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
             .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user["sub"])
+            .filter(Alert.user_id == UUID(current_user["sub"]))
             .all()
         )
     return [
@@ -40,7 +42,7 @@ async def get_critical_alerts(current_user=Depends(get_current_user), db: Sessio
     alerts = (
         db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
             .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user["sub"], Alert.level == "critical")
+            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.level == "critical")
             .all()
         )
     return [
@@ -65,7 +67,7 @@ async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session 
     alerts = (
         db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
             .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user["sub"], Alert.type.in_(["expiry", "slow_pace"]))
+            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.type.in_(["expiry", "slow_pace"]))
             .all()
         )
     return [
@@ -90,7 +92,7 @@ async def get_stock_alerts(current_user=Depends(get_current_user), db: Session =
     alerts = (
         db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
             .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == current_user["sub"], Alert.type == "stock_low_coverage")
+            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.type == "stock_low_coverage")
             .all()
         )
     return [
@@ -114,17 +116,17 @@ async def get_stock_alerts(current_user=Depends(get_current_user), db: Session =
 async def get_alert_summary(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     critical_alerts = (
         db.query(Alert)
-            .filter(Alert.user_id == current_user["sub"], Alert.level == "critical")
+            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.level == "critical")
             .count()
     )
     warning_alerts = (
         db.query(Alert)
-            .filter(Alert.user_id == current_user["sub"], Alert.level == "warning")
+            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.level == "warning")
             .count()
     )
     info_alerts = (
         db.query(Alert)
-            .filter(Alert.user_id == current_user["sub"], Alert.level == "info")
+            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.level == "info")
             .count()
     )
     return {
