@@ -1,4 +1,4 @@
-# App Backend — Smart Inventory
+# App Backend — Smart Inventory Platform
 
 Test Coverage:
 
@@ -72,7 +72,7 @@ Un código de barras la cumple en la primera llamada, porque no pasa por un moto
 #### Cómo Funciona
 
 ```
-App → POST /products/scan ──► ocr_service ──► image_storage_service (bazaar/ocr-temp)
+App → POST /products/scan ──► ocr_service ──► image_storage_service (tpp/ocr-temp)
                                     │                    ▲
                                     │  worker            │ DELETE al terminar
                                     ▼                    │
@@ -84,7 +84,7 @@ App → POST /products/            (el alta de siempre, con el borrador corregid
 Tres cosas que definen la integración:
 
 - **Este backend habla con un solo servicio del módulo**: `ocr_service`, que es el coordinador. Los tres motores viven detrás de él y sus URLs no se conocen acá, así que cambiar la estrategia de reconocimiento no toca este repositorio.
-- **La foto no se guarda acá ni en la base.** El coordinador la sube a `image_storage_service` en su carpeta temporal (`bazaar/ocr-temp`, TTL 15 min, sin recomprimir de más para no degradar el reconocimiento) y la descarta cuando termina de procesarla. La foto que alguien saca para escanear un producto no tiene por qué sobrevivir al escaneo; lo único que queda es la lectura.
+- **La foto no se guarda acá ni en la base.** El coordinador la sube a `image_storage_service` en su carpeta temporal (`tpp/ocr-temp`, TTL 15 min, sin recomprimir de más para no degradar el reconocimiento) y la descarta cuando termina de procesarla. La foto que alguien saca para escanear un producto no tiene por qué sobrevivir al escaneo; lo único que queda es la lectura.
 - **Es asincrónico** porque el reconocimiento tarda: sobre una foto de envase el coordinador prueba varias orientaciones y filtros, y puede llegar a pedirle una inferencia al motor pesado por cada una. Bloquear el formulario de alta todo ese tiempo es peor que devolver un identificador y avisar cuando está.
 
 #### Uso del Draft
