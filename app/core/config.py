@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     #Notification Service
-    NOTIFICATION_SERVICE_URL: str = "http://localhost:8010/notification"
+    NOTIFICATION_SERVICE_URL: str = "http://localhost:8010"
 
     class Config:
         env_file = ".env"

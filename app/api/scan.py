@@ -18,7 +18,7 @@ from app.schemas.ocr import (
     ScanResult,
     ScanState,
 )
-from app.services import ocr_client, ocr_draft
+from app.services import ocr_audit, ocr_client, ocr_draft
 from app.utils.bearer import get_bearer_token
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,23 @@ async def create_scan(
 
     try:
         if doc_type is ScanDocType.BARCODE:
-            reading = await ocr_client.sync_scan(**envio)
+            try:
+                reading = await ocr_client.sync_scan(**envio)
+            except (HTTPException, ocr_client.OCRUnavailable) as e:
+                await ocr_audit.registrar_falla(
+                    db, e, user_email=_actor(current_user), user_id=current_user["sub"],
+                    origen=ocr_audit.ORIGEN_APP, doc_type=doc_type.value,
+                )
+                raise
+            await run_in_threadpool(
+                ocr_audit.registrar,
+                db,
+                user_email=_actor(current_user),
+                user_id=current_user["sub"],
+                origen=ocr_audit.ORIGEN_APP,
+                doc_type=doc_type.value,
+                result=reading["result"],
+            )
             return ScanState(
                 status="done",
                 doc_type=doc_type,
@@ -107,6 +123,20 @@ async def get_scan(
 
     doc_type = ScanDocType(job["doc_type"])
     result = job.get("result")
+
+    if job["status"] in ("done", "failed"):
+        await run_in_threadpool(
+            ocr_audit.registrar,
+            db,
+            user_email=_actor(current_user),
+            user_id=current_user["sub"],
+            origen=ocr_audit.ORIGEN_APP,
+            doc_type=doc_type.value,
+            result=result,
+            job_id=job["job_id"],
+            status=job["status"],
+            error=job.get("error"),
+        )
 
     return ScanState(
         job_id=job["job_id"],
@@ -237,6 +267,11 @@ def _translate_sync(
 ) -> ScanResult:
     inventory = db.query(Product).filter(Product.user_id == user_id).all()
     return ocr_draft.to_scan_result(doc_type, result, inventory)
+
+
+def _actor(current_user: dict) -> str:
+    """Quién pidió el escaneo, para la auditoría: el email del token, o el id si no lo trae."""
+    return current_user.get("email") or str(current_user["sub"])
 
 
 async def _read_image(file: UploadFile) -> bytes:

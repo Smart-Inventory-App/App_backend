@@ -141,41 +141,51 @@ def _delete_alert(product: Product, alert_type: str, db: Session) -> None:
     db.commit()
     print(f"\n\nSe eliminó alerta de tipo '{alert_type}' para el producto '{product.nombre}'\n\n")
 
-def _notificate_low_coverage(token: str, product: Product, days: int, user_email: str):
+def _clear_alert(product: Product, alert_type: str, current_alerts: list[Alert], db: Session) -> None:
+    """Borra la alerta de ese tipo si existe: la condición que la generó ya no se cumple.
+
+    Sin esto una alerta nacía y no se iba nunca: reponer un producto con «stock
+    crítico» lo dejaba marcado como crítico con 200 unidades en la alacena.
+    """
+    if any(alert.type == alert_type for alert in current_alerts):
+        _delete_alert(product, alert_type, db)
+
+
+async def _notificate_low_coverage(token: str, product: Product, days: int, user_email: str):
     label = "día" if days == 1 else "días"
-    notification_service.send_notification(
+    await notification_service.send_notification(
         token,
         "Stock por agotarse",
         f"{product.nombre} se agotará en aproximadamente {days} {label}.",
         user_email
     )
 
-def _notificate_overstock(token: str, product: Product, days: int, user_email: str):
-    notification_service.send_notification(
+async def _notificate_overstock(token: str, product: Product, days: int, user_email: str):
+    await notification_service.send_notification(
         token,
         "Compraste más de lo necesario",
         f"Tenés {product.nombre} para aproximadamente {days} días. Quizás compraste de más.",
         user_email
     )
 
-def _notificate_understock(token: str, product: Product, days: int, user_email: str):
-    notification_service.send_notification(
+async def _notificate_understock(token: str, product: Product, days: int, user_email: str):
+    await notification_service.send_notification(
         token,
         "Compraste menos de lo necesario",
         f"Aun con la compra, {product.nombre} te alcanza solo para {days} días. Considerá comprar más.",
         user_email
     )
 
-def _notificate_slow_pace(token: str, product: Product, days_until_expiry: int, units_wasted: int, user_email: str):
-    notification_service.send_notification(
+async def _notificate_slow_pace(token: str, product: Product, days_until_expiry: int, units_wasted: int, user_email: str):
+    await notification_service.send_notification(
         token,
         "Riesgo de vencimiento por bajo consumo",
         f"Al ritmo actual, {units_wasted} unidad{'es' if units_wasted != 1 else ''} de {product.nombre} vencer{'án' if units_wasted != 1 else 'á'} en {days_until_expiry} días.",
         user_email
     )
 
-def _notificate_expirancy(token: str, product: Product, expirancy_days: int, user_email: str):
-    notification_service.send_notification(
+async def _notificate_expirancy(token: str, product: Product, expirancy_days: int, user_email: str):
+    await notification_service.send_notification(
         token,
         "Producto próximo a vencerse",
         f"El producto {product.nombre} vence en {expirancy_days} días.",
@@ -208,10 +218,10 @@ async def _check_product_state(
                 db.commit()
                 db.refresh(alert)
                 print(f"\n\nSe actualizó alerta de tipo 'expiry' a nivel 'critical' para el producto '{product.nombre}'\n\n")
-                _notificate_expirancy(user.firebase_token, product, expirancy_days, user.email)
+                await _notificate_expirancy(user.firebase_token, product, expirancy_days, user.email)
         elif expirancy_days < expirancy_warning:
             _create_alert(product, "expiry", "warning" if expirancy_days > 1 else "critical", db, None, None)
-            _notificate_expirancy(user.firebase_token, product, expirancy_days, user.email)
+            await _notificate_expirancy(user.firebase_token, product, expirancy_days, user.email)
 
     if not settings.ML_SERVICE_URL:
         return None
@@ -252,12 +262,18 @@ async def _check_product_state(
 
             # Alerta de bajo stock — se suprime en restock porque el caller
             # decide entre "compraste de más" o "compraste de menos"
-            if not stock_increased and days_until_stockout is not None and days_until_stockout < coverage_threshold:
-                _delete_alert(product, "stock_low_coverage", db)
-                _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db, None, days_until_stockout)
-                _notificate_low_coverage(user.firebase_token, product, days_until_stockout, user.email)
+            low_coverage = days_until_stockout is not None and days_until_stockout < coverage_threshold
+            if low_coverage:
+                if not stock_increased:
+                    _delete_alert(product, "stock_low_coverage", db)
+                    _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db, None, days_until_stockout)
+                    await _notificate_low_coverage(user.firebase_token, product, days_until_stockout, user.email)
+            else:
+                # La cobertura se recuperó (p. ej. repusieron stock): la alerta ya no corresponde.
+                _clear_alert(product, "stock_low_coverage", product_alerts, db)
 
             # Alerta de ritmo lento vs. vencimiento
+            slow_pace_risk = False
             if (
                 product.vencimiento is not None
                 and days_until_stockout is not None
@@ -268,9 +284,13 @@ async def _check_product_state(
                 if 0 < days_until_expiry < days_until_stockout:
                     units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
                     if units_wasted > 0:
+                        slow_pace_risk = True
                         _delete_alert(product, "slow_pace", db)
                         _create_alert(product, "slow_pace", "warning", db, units_wasted, None)
-                        _notificate_slow_pace(user.firebase_token, product, days_until_expiry, units_wasted, user.email)
+                        await _notificate_slow_pace(user.firebase_token, product, days_until_expiry, units_wasted, user.email)
+            if not slow_pace_risk:
+                # Cambió el vencimiento, el ritmo de consumo o el stock: ya no se va a desperdiciar nada.
+                _clear_alert(product, "slow_pace", product_alerts, db)
 
             return result
     except Exception:
@@ -466,9 +486,9 @@ async def create_product(
             coverage_threshold = existing.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
             overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
             if days_until_stockout is not None and days_until_stockout > overstock_threshold:
-                _notificate_overstock(user.firebase_token, existing, days_until_stockout, user.email)
+                await _notificate_overstock(user.firebase_token, existing, days_until_stockout, user.email)
             elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
-                _notificate_understock(user.firebase_token, existing, days_until_stockout, user.email)
+                await _notificate_understock(user.firebase_token, existing, days_until_stockout, user.email)
         return ProductResponse.model_validate(existing, from_attributes=True).model_copy(update={"merged": True})
 
     product = Product(user_id=user_id, **data.model_dump())
@@ -558,9 +578,9 @@ async def update_product(
         coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
         overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
         if days_until_stockout is not None and days_until_stockout > overstock_threshold:
-            _notificate_overstock(user.firebase_token, product, days_until_stockout, user.email)
+            await _notificate_overstock(user.firebase_token, product, days_until_stockout, user.email)
         elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
-            _notificate_understock(user.firebase_token, product, days_until_stockout, user.email)
+            await _notificate_understock(user.firebase_token, product, days_until_stockout, user.email)
 
     db.commit()
     db.refresh(product)

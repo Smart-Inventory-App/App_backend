@@ -44,6 +44,12 @@ def _delete_alert(product: Product, alert_type: str, db: Session) -> None:
     db.commit()
     print(f"\n\nSe eliminó alerta de tipo '{alert_type}' para el producto '{product.nombre}'\n\n")
 
+def _clear_alert(product: Product, alert_type: str, existing_types: set[str], db: Session) -> None:
+    """Borra la alerta de ese tipo si existe: la condición que la generó ya no se cumple."""
+    if alert_type in existing_types:
+        _delete_alert(product, alert_type, db)
+
+
 async def _ml_predict(events: list, product_data: dict, segment: str = DEFAULT_USER_TYPE) -> dict | None:
     """Llama al ML y retorna {daily_rate, days_until_stockout, stage} o None."""
     if not settings.ML_SERVICE_URL:
@@ -121,13 +127,17 @@ async def run_daily_coverage_check(
             )
 
             for product in products:
+                existing_types = {row[0] for row in db.query(Alert.type).filter(Alert.product_id == product.id).all()}
+
                 # Alerta de vencimiento
                 if product.vencimiento:
                     days_to_expiry = (product.vencimiento - date.today()).days
+                    if days_to_expiry > expiry_threshold:
+                        _clear_alert(product, "expiry", existing_types, db)
                     if 0 <= days_to_expiry < expiry_threshold:
                         _delete_alert(product, "expiry", db)
                         _create_alert(product, "expiry", "warning" if days_to_expiry > 1 else "critical", db, None, None)
-                        notification_service.send_notification(
+                        await notification_service.send_notification(
                             user.firebase_token,
                             "Producto próximo a vencerse",
                             f"{product.nombre} vence en {days_to_expiry} días.",
@@ -155,11 +165,13 @@ async def run_daily_coverage_check(
                     daily_rate = ml_result.get("daily_rate")
 
                     # Alerta de bajo stock
+                    if days_until_stockout is None or days_until_stockout >= coverage_threshold:
+                        _clear_alert(product, "stock_low_coverage", existing_types, db)
                     if days_until_stockout is not None and days_until_stockout < coverage_threshold:
                         label = "día" if days_until_stockout == 1 else "días"
                         _delete_alert(product, "stock_low_coverage", db)
                         _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db, None, days_until_stockout)
-                        notification_service.send_notification(
+                        await notification_service.send_notification(
                             user.firebase_token,
                             "Stock por agotarse",
                             f"{product.nombre} se agotará en aproximadamente {days_until_stockout} {label}.",
@@ -168,6 +180,7 @@ async def run_daily_coverage_check(
                         alerts_sent += 1
 
                     # Alerta de ritmo lento vs. vencimiento
+                    slow_pace_risk = False
                     if (
                         product.vencimiento is not None
                         and days_until_stockout is not None
@@ -178,15 +191,18 @@ async def run_daily_coverage_check(
                         if 0 < days_until_expiry < days_until_stockout:
                             units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
                             if units_wasted > 0:
+                                slow_pace_risk = True
                                 _delete_alert(product, "slow_pace", db)
                                 _create_alert(product, "slow_pace", "warning", db, units_wasted, None)
-                                notification_service.send_notification(
+                                await notification_service.send_notification(
                                     user.firebase_token,
                                     "Riesgo de vencimiento por bajo consumo",
                                     f"Al ritmo actual, {units_wasted} unidad{'es' if units_wasted != 1 else ''} de {product.nombre} vencer{'án' if units_wasted != 1 else 'á'} en {days_until_expiry} días.",
                                     user.email
                                 )
                                 alerts_sent += 1
+                    if not slow_pace_risk:
+                        _clear_alert(product, "slow_pace", existing_types, db)
 
         logger.info(f"Chequeo completado: {alerts_sent} alertas enviadas a {users_processed} usuarios.")
     except Exception:
