@@ -34,7 +34,10 @@ def test_get_scan_returns_503_when_the_coordinator_is_down(client, monkeypatch):
     assert resp.status_code == 503
 
 
-def test_a_file_over_the_size_limit_is_rejected(client):
+def test_a_file_over_the_size_limit_is_rejected(client, monkeypatch):
+    # Se baja el tope en vez de armar 10 MB: el parser de multipart es Python puro y,
+    # bajo coverage, procesar un cuerpo de ese tamaño tardaba minutos.
+    monkeypatch.setattr(scan_api, "MAX_BYTES", 1024)
     big = b"\xff\xd8" + b"0" * (scan_api.MAX_BYTES + 1)
 
     resp = client.post(

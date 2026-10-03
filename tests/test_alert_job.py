@@ -11,52 +11,17 @@ import httpx
 import pytest
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models.alert import Alert
 from app.models.product import Product
 from app.models.profile import UserProfile
 from app.models.user import AuthUser
 from app.services import alert_job
-from app.services.notifications import NotificationService
 from tests.conftest import TestingSessionLocal
 
 
 @pytest.fixture
 def use_test_db(monkeypatch):
     monkeypatch.setattr(alert_job, "SessionLocal", TestingSessionLocal)
-
-
-@pytest.fixture
-def notifications(monkeypatch):
-    sent = []
-
-    def fake_send(self, token, title, body, email):
-        sent.append({"token": token, "title": title, "body": body, "email": email})
-        return 200
-
-    monkeypatch.setattr(NotificationService, "send_notification", fake_send)
-    return sent
-
-
-@pytest.fixture
-def ml_enabled(monkeypatch):
-    monkeypatch.setattr(settings, "ML_SERVICE_URL", "http://ml:9000")
-
-
-@pytest.fixture
-def ml_transport(monkeypatch):
-    def install(handler):
-        def record(request: httpx.Request) -> httpx.Response:
-            return handler(request)
-
-        class FakeClient(httpx.AsyncClient):
-            def __init__(self, *args, **kwargs):
-                kwargs["transport"] = httpx.MockTransport(record)
-                super().__init__(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
-
-    return install
 
 
 def make_user(db, firebase_token="tok", **profile_overrides):
@@ -202,16 +167,8 @@ async def test_without_an_ml_url_no_coverage_alert_is_generated(db, use_test_db,
     assert result["alerts_sent"] == 0
 
 
-async def test_an_unreachable_ml_service_does_not_break_the_job(db, use_test_db, notifications, ml_enabled, monkeypatch):
-    def down(request):
-        raise httpx.ConnectError("down")
-
-    class FakeClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(down)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+async def test_an_unreachable_ml_service_does_not_break_the_job(db, use_test_db, notifications, ml_enabled, ml_transport):
+    ml_transport(httpx.ConnectError("down"))
     user_id = make_user(db)
     product = Product(user_id=user_id, nombre="Fideos", categoria="Almacen", stock=5)
     db.add(product)
@@ -220,6 +177,82 @@ async def test_an_unreachable_ml_service_does_not_break_the_job(db, use_test_db,
     result = await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
 
     assert result["alerts_sent"] == 0
+
+
+# ── las alertas se van cuando la condición deja de cumplirse ──────────────────
+
+def alert_types(db, product):
+    return sorted(a.type for a in db.query(Alert).filter(Alert.product_id == product.id))
+
+
+def predict(days_until_stockout, daily_rate=1.0):
+    return lambda req: httpx.Response(200, json={"daily_rate": daily_rate, "days_until_stockout": days_until_stockout})
+
+
+async def test_moving_the_expiry_away_clears_the_expiry_alert(db, use_test_db, notifications):
+    user_id = make_user(db)
+    product = Product(user_id=user_id, nombre="Yogur", categoria="Lacteo", stock=5, vencimiento=date.today() + timedelta(days=2))
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
+    assert alert_types(db, product) == ["expiry"]
+
+    product.vencimiento = date.today() + timedelta(days=90)
+    db.commit()
+    await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
+
+    assert alert_types(db, product) == []
+
+
+async def test_a_recovered_coverage_clears_the_low_stock_alert(db, use_test_db, notifications, ml_enabled, ml_transport):
+    user_id = make_user(db)
+    product = Product(user_id=user_id, nombre="Arroz", categoria="Almacen", stock=1)
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    ml_transport(predict(2))
+    await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
+    assert alert_types(db, product) == ["stock_low_coverage"]
+
+    product.stock = 500
+    db.commit()
+    ml_transport(predict(400))
+    await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
+
+    assert alert_types(db, product) == []
+
+
+async def test_a_coverage_that_stays_low_keeps_the_alert_and_notifies_again(db, use_test_db, notifications, ml_enabled, ml_transport):
+    user_id = make_user(db)
+    product = Product(user_id=user_id, nombre="Fideos", categoria="Almacen", stock=1)
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    ml_transport(predict(2))
+
+    await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
+    await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
+
+    assert alert_types(db, product) == ["stock_low_coverage"]
+    assert len([n for n in notifications if n["title"] == "Stock por agotarse"]) == 2
+
+
+async def test_the_slow_pace_alert_is_cleared_when_the_risk_is_gone(db, use_test_db, notifications, ml_enabled, ml_transport):
+    user_id = make_user(db)
+    product = Product(user_id=user_id, nombre="Miel", categoria="Almacen", stock=9, vencimiento=date.today() + timedelta(days=5))
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    ml_transport(predict(20, daily_rate=0.5))
+    await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
+    assert "slow_pace" in alert_types(db, product)
+
+    product.vencimiento = date.today() + timedelta(days=400)
+    db.commit()
+    await alert_job.run_daily_coverage_check(target_user_id=user_id, force=True)
+
+    assert "slow_pace" not in alert_types(db, product)
 
 
 async def test_an_unexpected_error_is_caught_and_reported_as_zero(db, use_test_db, monkeypatch):

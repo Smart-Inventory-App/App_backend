@@ -7,46 +7,9 @@ import pytest
 from app.api import products as products_api
 from app.core.config import settings
 from app.models.alert import Alert
-from app.services.notifications import NotificationService
 from tests.conftest import TEST_USER_ID
 
 AUTH = {"Authorization": "Bearer token-de-prueba"}
-
-
-@pytest.fixture
-def notifications(monkeypatch):
-    """Registra las notificaciones que se hubieran mandado, sin pegarle a la red."""
-    sent = []
-
-    def fake_send(self, token, title, body, email):
-        sent.append({"token": token, "title": title, "body": body, "email": email})
-        return 200
-
-    monkeypatch.setattr(NotificationService, "send_notification", fake_send)
-    return sent
-
-
-@pytest.fixture
-def ml_enabled(monkeypatch):
-    monkeypatch.setattr(settings, "ML_SERVICE_URL", "http://ml:9000")
-
-
-@pytest.fixture
-def ml_transport(monkeypatch):
-    """Reemplaza el httpx.AsyncClient que usa `_check_product_state` para hablar con el ML."""
-
-    def install(handler):
-        def record(request: httpx.Request) -> httpx.Response:
-            return handler(request)
-
-        class FakeClient(httpx.AsyncClient):
-            def __init__(self, *args, **kwargs):
-                kwargs["transport"] = httpx.MockTransport(record)
-                super().__init__(*args, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
-
-    return install
 
 
 def create(client, **overrides):
@@ -184,27 +147,95 @@ def test_a_non_200_ml_response_is_ignored(client, db, notifications, ml_enabled,
     assert resp.status_code == 200
 
 
-def test_an_unreachable_ml_service_is_ignored(client, db, notifications, ml_enabled, monkeypatch):
+def test_an_unreachable_ml_service_is_ignored(client, db, notifications, ml_enabled, ml_transport):
     product = create(client, nombre="Azucar", stock=5)
-
-    class BoomClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def post(self, *args, **kwargs):
-            raise RuntimeError("el ML no responde")
-
-    monkeypatch.setattr(httpx, "AsyncClient", BoomClient)
+    ml_transport(httpx.ConnectError("el ML no responde"))
 
     resp = client.put(f"/products/{product['id']}", json={"stock": 4}, headers=AUTH)
 
     assert resp.status_code == 200
+
+
+# ── las alertas se van cuando la condición que las generó deja de cumplirse ──
+
+def alerts_of(db, product, alert_type=None):
+    query = db.query(Alert).filter(Alert.product_id == product["id"])
+    return query.filter(Alert.type == alert_type).count() if alert_type else query.count()
+
+
+def predict(days_until_stockout, daily_rate=1.0):
+    return lambda req: httpx.Response(200, json={"daily_rate": daily_rate, "days_until_stockout": days_until_stockout})
+
+
+def test_restocking_clears_the_low_coverage_alert(client, db, notifications, ml_enabled, ml_transport):
+    product = create(client, nombre="Cafe", stock=20)
+    ml_transport(predict(3))
+    client.post(f"/products/{product['id']}/events", json={"event_type": "consumed", "quantity": 19}, headers=AUTH)
+    assert alerts_of(db, product, "stock_low_coverage") == 1
+
+    ml_transport(predict(200))
+    client.put(f"/products/{product['id']}", json={"stock": 200}, headers=AUTH)
+
+    assert alerts_of(db, product, "stock_low_coverage") == 0
+
+
+def test_a_restock_that_still_leaves_low_coverage_keeps_the_alert(client, db, notifications, ml_enabled, ml_transport):
+    product = create(client, nombre="Te", stock=20)
+    ml_transport(predict(3))
+    client.post(f"/products/{product['id']}/events", json={"event_type": "consumed", "quantity": 19}, headers=AUTH)
+
+    client.put(f"/products/{product['id']}", json={"stock": 2}, headers=AUTH)
+
+    assert alerts_of(db, product, "stock_low_coverage") == 1
+
+
+def test_a_consumption_with_no_rate_clears_the_low_coverage_alert(client, db, notifications, ml_enabled, ml_transport):
+    """Sin ritmo de consumo no hay fecha de agotamiento: nada que alertar."""
+    product = create(client, nombre="Sal", stock=20)
+    ml_transport(predict(3))
+    client.post(f"/products/{product['id']}/events", json={"event_type": "consumed", "quantity": 19}, headers=AUTH)
+    ml_transport(lambda req: httpx.Response(200, json={"daily_rate": None, "days_until_stockout": None}))
+
+    client.put(f"/products/{product['id']}", json={"stock": 50}, headers=AUTH)
+
+    assert alerts_of(db, product, "stock_low_coverage") == 0
+
+
+def test_moving_the_expiry_away_clears_the_slow_pace_alert(client, db, notifications, ml_enabled, ml_transport):
+    vencimiento = (date.today() + timedelta(days=5)).isoformat()
+    product = create(client, nombre="Galletas", stock=10, vencimiento=vencimiento)
+    ml_transport(predict(20, daily_rate=0.5))
+    client.put(f"/products/{product['id']}", json={"stock": 9}, headers=AUTH)
+    assert alerts_of(db, product, "slow_pace") == 1
+
+    far = (date.today() + timedelta(days=400)).isoformat()
+    client.put(f"/products/{product['id']}", json={"vencimiento": far}, headers=AUTH)
+
+    assert alerts_of(db, product, "slow_pace") == 0
+
+
+def test_a_depleted_product_has_no_units_left_to_waste(client, db, notifications, ml_enabled, ml_transport):
+    vencimiento = (date.today() + timedelta(days=5)).isoformat()
+    product = create(client, nombre="Mermelada", stock=10, vencimiento=vencimiento)
+    ml_transport(predict(20, daily_rate=0.5))
+    client.put(f"/products/{product['id']}", json={"stock": 9}, headers=AUTH)
+    assert alerts_of(db, product, "slow_pace") == 1
+
+    client.post(f"/products/{product['id']}/events", json={"event_type": "consumed", "quantity": 9}, headers=AUTH)
+
+    assert alerts_of(db, product, "slow_pace") == 0
+
+
+def test_an_ml_failure_does_not_clear_existing_alerts(client, db, notifications, ml_enabled, ml_transport):
+    """Si el ML no contesta no se sabe si la condición sigue: se conserva lo que había."""
+    product = create(client, nombre="Aceitunas", stock=20)
+    ml_transport(predict(3))
+    client.post(f"/products/{product['id']}/events", json={"event_type": "consumed", "quantity": 19}, headers=AUTH)
+
+    ml_transport(lambda req: httpx.Response(500))
+    client.put(f"/products/{product['id']}", json={"stock": 100}, headers=AUTH)
+
+    assert alerts_of(db, product, "stock_low_coverage") == 1
 
 
 # ── `_get_user`: 404 cuando el token no corresponde a un usuario real ────────
