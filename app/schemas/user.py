@@ -94,17 +94,3 @@ class UserResponse(UserBase):
 
     class Config:
         from_attributes = True
-
-
-class TransactionBase(BaseModel):
-    amount: int
-    description: str
-
-
-class TransactionResponse(TransactionBase):
-    id: int
-    user_id: int
-    created_at: datetime
-
-    class Config:
-        from_attributes = True

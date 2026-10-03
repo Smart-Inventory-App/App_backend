@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     # ML service URL for smart alerts
     ML_SERVICE_URL: str = ""
 
+    # OCR module service URL and timeout
+    OCR_SERVICE_URL: str = ""
+    # Cubre la subida de la foto y el encolado, no el reconocimiento. Tiene que
+    # ser mayor que el timeout con el que ocr_service sube al storage (30 s): si
+    # cortamos antes, la imagen temporal queda subida y sin nadie que la borre.
+    OCR_TIMEOUT_SECONDS: float = 60.0
+
     # Firebase
     FIREBASE_CREDENTIALS: str = ""
 
@@ -46,7 +53,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     #Notification Service
-    NOTIFICATION_SERVICE_URL: str = "http://localhost:8010/notification"
+    NOTIFICATION_SERVICE_URL: str = "http://localhost:8010"
 
     class Config:
         env_file = ".env"
