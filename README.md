@@ -1,10 +1,8 @@
 # App Backend — Smart Inventory Platform
 
-Test Coverage:
+[![codecov](https://codecov.io/gh/Smart-Inventory-App/App_backend/branch/main/graph/badge.svg?token=LQMB0H4SY1)](https://codecov.io/gh/Smart-Inventory-App/App_backend)
 
-[![codecov](https://codecov.io/github/Smart-Inventory-App/App_backend/graph/badge.svg?token=LQMB0H4SY1)](https://codecov.io/github/Smart-Inventory-App/App_backend)
-
-Backend principal de Smart Inventory. Gestiona productos del usuario y valida JWT emitidos por el servicio `Auth`.
+**Backend principal** de Smart Inventory. Gestiona productos del usuario y valida JWT emitidos por el servicio `Auth`.
 
 ---
 
