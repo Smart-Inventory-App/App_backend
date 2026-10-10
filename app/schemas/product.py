@@ -22,7 +22,7 @@ class ProductCreate(BaseModel):
     nombre: str = Field(..., max_length=20)
     marca: Optional[str] = None
     categoria: str = Field(..., max_length=20)
-    stock: int = Field(..., gt=0)
+    stock: int = Field(..., gt=0, le=999999)
     vencimiento: Optional[date] = None
     descripcion: Optional[str] = Field(None, max_length=400)
     imagen_url: Optional[str] = None
@@ -38,7 +38,7 @@ class ProductUpdate(BaseModel):
     nombre: Optional[str] = Field(None, max_length=20)
     marca: Optional[str] = None
     categoria: Optional[str] = Field(None, max_length=20)
-    stock: Optional[int] = Field(None, gt=0)
+    stock: Optional[int] = Field(None, gt=0, le=999999)
     vencimiento: Optional[date] = None
     descripcion: Optional[str] = Field(None, max_length=400)
     imagen_url: Optional[str] = None

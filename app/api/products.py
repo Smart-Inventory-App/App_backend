@@ -3,7 +3,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Literal, Optional
@@ -30,14 +30,14 @@ from app.services.notifications import NotificationService
 
 class EventRequest(BaseModel):
     event_type: Literal["consumed", "expired"]
-    quantity: int
-    note: Optional[str] = None
+    quantity: int = Field(..., le=999999)
+    note: Optional[str] = Field(None, max_length=50)
 
 
 class EventCorrection(BaseModel):
     event_type: Literal["consumed", "expired", "restocked"]
-    quantity: int
-    note: Optional[str] = None
+    quantity: int = Field(..., le=999999)
+    note: Optional[str] = Field(None, max_length=50)
 
 
 def _stock_effect(event_type: str, quantity: int) -> int:
@@ -790,6 +790,9 @@ async def delete_product(
     actor_email = current_user.get("email")
     product = _get_user_product(product_id, user_id, db)
     nombre = product.nombre
+    # alerts.product_id no tiene ON DELETE CASCADE: en Postgres, borrar un producto con alertas
+    # falla con un 500 si antes no se borran sus alertas.
+    db.query(Alert).filter(Alert.product_id == product.id).delete(synchronize_session=False)
     db.delete(product)
     db.commit()
     _log_activity(
