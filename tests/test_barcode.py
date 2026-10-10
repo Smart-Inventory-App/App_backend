@@ -186,3 +186,52 @@ def test_lookup_route_does_not_shadow_get_product_by_id(client, db):
     product = add_product(db)
 
     assert client.get(f"/products/{product.id}", headers=AUTH).status_code == 200
+
+
+# ── lista completa por código y datos que viajan al elegir un producto ───────
+
+def test_lookup_all_returns_every_lot_of_the_code_soonest_expiry_first(client, db):
+    from datetime import date
+    late = add_product(db, nombre="Yogur", codigo_barras="7794640172021", vencimiento=date(2027, 5, 1))
+    soon = add_product(db, nombre="Yogur", codigo_barras="7794640172021", vencimiento=date(2027, 1, 1))
+    add_product(db, nombre="Otro", codigo_barras="7790895000997")
+
+    resp = client.get("/products/by-barcode/779-464 017 2021/all", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert [p["id"] for p in resp.json()] == [soon.id, late.id]
+
+
+def test_lookup_all_of_an_unknown_or_blank_code_is_an_empty_list(client, db):
+    add_product(db, codigo_barras="7794640172021")
+
+    assert client.get("/products/by-barcode/7790895000997/all", headers=AUTH).json() == []
+    assert client.get("/products/by-barcode/%20/all", headers=AUTH).json() == []
+
+
+def test_lookup_all_of_a_malformed_code_is_422(client, db):
+    assert client.get("/products/by-barcode/12345/all", headers=AUTH).status_code == 422
+
+
+def test_lookup_all_does_not_see_other_users_products(client, db):
+    add_product(db, user_id="00000000-0000-0000-0000-000000000000", codigo_barras="7794640172021")
+
+    assert client.get("/products/by-barcode/7794640172021/all", headers=AUTH).json() == []
+
+
+def test_suggestions_carry_the_data_the_form_copies(client, db):
+    add_product(
+        db, nombre="Yogur", marca="Ser", codigo_barras="7794640172021", descripcion="Natural",
+        imagen_url="https://cdn/x.jpg", stock_minimo=3, dias_alerta_vencimiento=4,
+    )
+
+    suggested = client.get("/products/suggest", params={"q": "yog"}, headers=AUTH).json()[0]
+    by_code = client.get("/products/by-barcode/7794640172021", headers=AUTH).json()
+    listed = client.get("/products/by-barcode/7794640172021/all", headers=AUTH).json()[0]
+
+    for payload in (suggested, by_code, listed):
+        assert payload["codigo_barras"] == "7794640172021"
+        assert payload["descripcion"] == "Natural"
+        assert payload["imagen_url"] == "https://cdn/x.jpg"
+        assert payload["stock_minimo"] == 3
+        assert payload["dias_alerta_vencimiento"] == 4

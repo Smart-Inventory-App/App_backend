@@ -82,6 +82,9 @@ class ProductSuggestion(BaseModel):
     stock: int = 0
     stock_minimo: Optional[int] = None
     dias_alerta_vencimiento: Optional[int] = None
+    descripcion: Optional[str] = None
+    imagen_url: Optional[str] = None
+    codigo_barras: Optional[str] = None
 
 
 class ProductDefaults(BaseModel):
