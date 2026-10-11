@@ -1,6 +1,7 @@
 """Evaluación de alertas de `_check_product_state`: vencimiento y, con el
 servicio de ML configurado, cobertura baja / exceso de stock / ritmo lento."""
 from datetime import date, timedelta
+from uuid import UUID
 import httpx
 import pytest
 
@@ -274,3 +275,55 @@ def test_update_is_404_when_the_caller_has_no_auth_users_row(client, db, monkeyp
     resp = client.put(f"/products/{product.id}", json={"stock": 1}, headers=AUTH)
 
     assert resp.status_code == 404
+
+
+# ── borrar un producto que tiene alertas ──────────────────────────────────────
+
+def test_deleting_a_product_also_deletes_its_alerts(client, db):
+    # Regresión: en Postgres la FK de alerts.product_id rechazaba el borrado (500).
+    product = create(client, nombre="Con alerta")
+    other = create(client, nombre="Otro")
+    for p in (product, other):
+        db.add(Alert(user_id=UUID(TEST_USER_ID), product_id=p["id"], type="expiry", level="warning"))
+    db.commit()
+
+    resp = client.delete(f"/products/{product['id']}", headers=AUTH)
+
+    assert resp.status_code == 204
+    db.expire_all()
+    assert db.query(Alert).filter(Alert.product_id == product["id"]).count() == 0
+    # las alertas de otros productos no se tocan
+    assert db.query(Alert).filter(Alert.product_id == other["id"]).count() == 1
+
+
+# ── límites de stock (6 dígitos) y de motivo (50 caracteres) ──────────────────
+
+def test_stock_above_six_digits_is_rejected_on_create_and_update(client, db):
+    resp = client.post("/products/", json={"nombre": "Grande", "categoria": "X", "stock": 1000000}, headers=AUTH)
+    assert resp.status_code == 422
+
+    ok = client.post("/products/", json={"nombre": "Grande", "categoria": "X", "stock": 999999}, headers=AUTH)
+    assert ok.status_code == 201
+
+    upd = client.put(f"/products/{ok.json()['id']}", json={"stock": 1000000}, headers=AUTH)
+    assert upd.status_code == 422
+
+
+def test_event_quantity_and_note_limits(client, db):
+    product = create(client, nombre="Eventos", stock=999999)
+    base = {"event_type": "consumed", "quantity": 1}
+
+    assert client.post(f"/products/{product['id']}/events", json={**base, "quantity": 1000000}, headers=AUTH).status_code == 422
+    assert client.post(f"/products/{product['id']}/events", json={**base, "note": "x" * 51}, headers=AUTH).status_code == 422
+    assert client.post(f"/products/{product['id']}/events", json={**base, "note": "x" * 50}, headers=AUTH).status_code == 201
+
+
+def test_correction_quantity_and_note_limits(client, db):
+    product = create(client, nombre="Corregir", stock=20)
+    client.post(f"/products/{product['id']}/events", json={"event_type": "consumed", "quantity": 2}, headers=AUTH)
+    event_id = client.get(f"/products/{product['id']}/consumption", headers=AUTH).json()[0]["id"]
+    url = f"/products/{product['id']}/events/{event_id}"
+
+    assert client.put(url, json={"event_type": "consumed", "quantity": 1000000}, headers=AUTH).status_code == 422
+    assert client.put(url, json={"event_type": "consumed", "quantity": 3, "note": "x" * 51}, headers=AUTH).status_code == 422
+    assert client.put(url, json={"event_type": "consumed", "quantity": 3, "note": "x" * 50}, headers=AUTH).status_code == 200

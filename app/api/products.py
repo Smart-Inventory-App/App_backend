@@ -3,7 +3,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Literal, Optional
@@ -30,14 +30,14 @@ from app.services.notifications import NotificationService
 
 class EventRequest(BaseModel):
     event_type: Literal["consumed", "expired"]
-    quantity: int
-    note: Optional[str] = None
+    quantity: int = Field(..., le=999999)
+    note: Optional[str] = Field(None, max_length=50)
 
 
 class EventCorrection(BaseModel):
     event_type: Literal["consumed", "expired", "restocked"]
-    quantity: int
-    note: Optional[str] = None
+    quantity: int = Field(..., le=999999)
+    note: Optional[str] = Field(None, max_length=50)
 
 
 def _stock_effect(event_type: str, quantity: int) -> int:
@@ -358,6 +358,24 @@ async def get_filter_options(
     return {"categorias": sorted(categorias), "ubicaciones": sorted(ubicaciones), "marcas": sorted(marcas)}
 
 
+def _to_suggestion(p: Product) -> ProductSuggestion:
+    """Los datos de un producto que la app copia al formulario al elegirlo."""
+    return ProductSuggestion(
+        id=p.id,
+        nombre=p.nombre,
+        marca=p.marca,
+        categoria=p.categoria,
+        ubicacion=p.ubicacion,
+        vencimiento=p.vencimiento,
+        stock=p.stock,
+        stock_minimo=p.stock_minimo,
+        dias_alerta_vencimiento=p.dias_alerta_vencimiento,
+        descripcion=p.descripcion,
+        imagen_url=p.imagen_url,
+        codigo_barras=p.codigo_barras,
+    )
+
+
 @router.get("/suggest", response_model=list[ProductSuggestion])
 async def suggest_products(
     q: str = Query(..., min_length=1),
@@ -372,20 +390,7 @@ async def suggest_products(
         .limit(10)
         .all()
     )
-    return [
-        ProductSuggestion(
-            id=p.id,
-            nombre=p.nombre,
-            marca=p.marca,
-            categoria=p.categoria,
-            ubicacion=p.ubicacion,
-            vencimiento=p.vencimiento,
-            stock=p.stock,
-            stock_minimo=p.stock_minimo,
-            dias_alerta_vencimiento=p.dias_alerta_vencimiento,
-        )
-        for p in rows
-    ]
+    return [_to_suggestion(p) for p in rows]
 
 
 @router.get("/by-barcode/{codigo}", response_model=Optional[ProductSuggestion])
@@ -419,17 +424,33 @@ async def product_by_barcode(
     if not product:
         return None
 
-    return ProductSuggestion(
-        id=product.id,
-        nombre=product.nombre,
-        marca=product.marca,
-        categoria=product.categoria,
-        ubicacion=product.ubicacion,
-        vencimiento=product.vencimiento,
-        stock=product.stock,
-        stock_minimo=product.stock_minimo,
-        dias_alerta_vencimiento=product.dias_alerta_vencimiento,
+    return _to_suggestion(product)
+
+
+@router.get("/by-barcode/{codigo}/all", response_model=list[ProductSuggestion])
+async def products_by_barcode(
+    codigo: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Todos los productos del usuario con este código de barras (puede haber varios lotes).
+
+    Si el código viene vacío devuelve una lista vacía; si viene mal escrito, un 422.
+    """
+    try:
+        normalizado = barcode.normalizar(codigo)
+    except barcode.CodigoInvalido as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    if not normalizado:
+        return []
+
+    rows = (
+        db.query(Product)
+        .filter(Product.user_id == current_user["sub"], Product.codigo_barras == normalizado)
+        .order_by(Product.vencimiento.asc().nullslast(), Product.id.asc())
+        .all()
     )
+    return [_to_suggestion(p) for p in rows]
 
 
 @router.get("/defaults", response_model=ProductDefaults)
@@ -790,6 +811,9 @@ async def delete_product(
     actor_email = current_user.get("email")
     product = _get_user_product(product_id, user_id, db)
     nombre = product.nombre
+    # alerts.product_id no tiene ON DELETE CASCADE: en Postgres, borrar un producto con alertas
+    # falla con un 500 si antes no se borran sus alertas.
+    db.query(Alert).filter(Alert.product_id == product.id).delete(synchronize_session=False)
     db.delete(product)
     db.commit()
     _log_activity(
