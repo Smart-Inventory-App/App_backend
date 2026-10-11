@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
+from app.models.profile import DEFAULT_USER_TYPE, UserProfile
 from app.services.alert_job import run_daily_coverage_check
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -49,6 +50,7 @@ async def trigger_alerts_user(user_id: str):
 @router.get("/products", dependencies=[Depends(_verify_token)])
 def get_all_products(db: Session = Depends(get_db)):
     products = db.query(Product).all()
+    user_types = dict(db.query(UserProfile.user_id, UserProfile.user_type).all())
     return [
         {
             "id": p.id,
@@ -58,6 +60,7 @@ def get_all_products(db: Session = Depends(get_db)):
             "stock": p.stock,
             "stock_minimo": p.stock_minimo,
             "vencimiento": str(p.vencimiento) if p.vencimiento else None,
+            "user_type": user_types.get(p.user_id) or DEFAULT_USER_TYPE,
         }
         for p in products
     ]

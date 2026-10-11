@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     API_TITLE: str = "TPP API"
     API_VERSION: str = "1.0.0"
     DEBUG: bool = False
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    SECRET_KEY: str
 
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/tpp_db"
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.ALLOWED_ORIGINS_STR.split(",") if o.strip()]
 
     # JWT — shared secret with Auth service
-    JWT_SECRET: str = "dev-secret-change-in-prod"
+    JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
 
     # Email (SMTP) for recovery codes
@@ -33,24 +33,32 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = "noreply@smartinventory.com"
 
     # Internal service auth (used by ML service)
-    INTERNAL_SERVICE_TOKEN: str = "change-this-internal-token"
+    INTERNAL_SERVICE_TOKEN: str
 
     # ML service URL for smart alerts
     ML_SERVICE_URL: str = ""
 
+    # OCR module service URL and timeout
+    OCR_SERVICE_URL: str = ""
+    # Cubre la subida de la foto y el encolado, no el reconocimiento. Tiene que
+    # ser mayor que el timeout con el que ocr_service sube al storage (30 s): si
+    # cortamos antes, la imagen temporal queda subida y sin nadie que la borre.
+    OCR_TIMEOUT_SECONDS: float = 60.0
+
     # Firebase
-    FIREBASE_CREDENTIALS: str
+    FIREBASE_CREDENTIALS: str = ""
 
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
     #Notification Service
-    NOTIFICATION_SERVICE_URL: str = "http://localhost:8010/notification"
+    NOTIFICATION_SERVICE_URL: str = "http://localhost:8010"
 
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 
 settings = Settings()

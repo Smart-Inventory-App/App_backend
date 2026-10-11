@@ -12,3 +12,12 @@ build
 .vscode
 postgres_data
 .env
+
+# Testing
+.coverage
+# Base SQLite
+test.db
+# Coverage
+.coverage.*
+coverage.xml
+htmlcov/

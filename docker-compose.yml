@@ -12,6 +12,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - tpp-net
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-user}"]
       interval: 10s
@@ -25,10 +26,11 @@ services:
     container_name: tpp_backend
     environment:
       DATABASE_URL: postgresql://${DB_USER:-user}:${DB_PASSWORD:-password}@db:5432/${DB_NAME:-tpp_db}
-      DEBUG: ${DEBUG:-True}
+      DEBUG: ${DEBUG:-False}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key}
       JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8081,http://localhost:8100,http://localhost:19000,http://10.0.2.2:8000}
+      OCR_SERVICE_URL: http://tpp_ocr:8003
     ports:
       - "8000:8000"
     depends_on:
@@ -39,6 +41,7 @@ services:
     command: python main.py
     networks:
       - tpp-net
+    restart: unless-stopped
 
 volumes:
   postgres_data:

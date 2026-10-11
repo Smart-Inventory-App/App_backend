@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, func, UUID
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, func, Uuid as UUID
 
 from app.core.database import Base
 
