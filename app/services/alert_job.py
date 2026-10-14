@@ -7,10 +7,9 @@ from datetime import date, datetime, timezone
 from uuid import UUID
 from sqlalchemy.orm import Session
 
-import httpx
-
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.services.ml_client import predict as _ml_predict
 from app.services.notifications import NotificationService
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
@@ -48,33 +47,6 @@ def _clear_alert(product: Product, alert_type: str, existing_types: set[str], db
     """Borra la alerta de ese tipo si existe: la condición que la generó ya no se cumple."""
     if alert_type in existing_types:
         _delete_alert(product, alert_type, db)
-
-
-async def _ml_predict(events: list, product_data: dict, segment: str = DEFAULT_USER_TYPE) -> dict | None:
-    """Llama al ML y retorna {daily_rate, days_until_stockout, stage} o None."""
-    if not settings.ML_SERVICE_URL:
-        return None
-    events_payload = [
-        {
-            "quantity": e.quantity,
-            "event_type": e.event_type,
-            "consumed_at": e.consumed_at.isoformat(),
-            "product_id": e.product_id,
-        }
-        for e in events
-    ]
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(
-                f"{settings.ML_SERVICE_URL}/models/predict-product",
-                json={"events": events_payload, "product": product_data, "segment": segment},
-                headers={"X-Internal-Token": settings.INTERNAL_SERVICE_TOKEN},
-            )
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-    return None
 
 
 async def run_daily_coverage_check(

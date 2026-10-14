@@ -90,3 +90,13 @@ class ProductSuggestion(BaseModel):
 class ProductDefaults(BaseModel):
     last_categoria: Optional[str] = None
     last_ubicacion: Optional[str] = None
+
+
+class ReposicionSuggestion(BaseModel):
+    product_id: int
+    nombre: str
+    stock: int
+    imagen_url: Optional[str] = None
+    daily_rate: float
+    days_until_stockout: Optional[int] = None
+    suggested_qty: int

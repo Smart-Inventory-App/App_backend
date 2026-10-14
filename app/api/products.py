@@ -1,7 +1,8 @@
+import asyncio
+import logging
 from datetime import date
 from uuid import UUID
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -16,7 +17,7 @@ from app.core.security import get_current_user
 from app.models.activity_log import AdminActivityLog
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
-from app.models.profile import DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, UserProfile
+from app.models.profile import DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, DEFAULT_USER_TYPE, UserProfile
 from app.models.user import AuthUser
 from app.schemas.product import (
     ProductCreate,
@@ -24,8 +25,14 @@ from app.schemas.product import (
     ProductResponse,
     ProductSuggestion,
     ProductUpdate,
+    ReposicionSuggestion,
 )
+from app.services import ml_client
 from app.services.notifications import NotificationService
+
+logger = logging.getLogger(__name__)
+
+_ML_CONCURRENCY = 8
 
 
 class EventRequest(BaseModel):
@@ -226,76 +233,76 @@ async def _check_product_state(
     if not settings.ML_SERVICE_URL:
         return None
     coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
+    segment = profile.user_type or DEFAULT_USER_TYPE
+    events = (
+        db.query(ConsumptionEvent)
+        .filter(ConsumptionEvent.product_id == product.id)
+        .order_by(ConsumptionEvent.consumed_at.asc())
+        .all()
+    )
+    product_data = {
+        "id": product.id,
+        "stock": product.stock,
+        "stock_minimo": product.stock_minimo,
+        "categoria": product.categoria,
+        "nombre": product.nombre,
+    }
+    result = await ml_client.predict(events, product_data, segment=segment)
+    if not result:
+        return None
+
+    # Las llamadas de red ya se toleran en ml_client; esto cubre el resto de la
+    # evaluación (DB, notificaciones): una falla acá no debe tumbar el alta o la
+    # edición del producto que la disparó, que ya quedó guardado.
     try:
-        events = (
-            db.query(ConsumptionEvent)
-            .filter(ConsumptionEvent.product_id == product.id)
-            .order_by(ConsumptionEvent.consumed_at.asc())
-            .all()
-        )
-        events_data = [
-            {
-                "quantity": e.quantity,
-                "event_type": e.event_type,
-                "consumed_at": e.consumed_at.isoformat(),
-                "product_id": e.product_id,
-            }
-            for e in events
-        ]
-        product_data = {
-            "id": product.id,
-            "stock": product.stock,
-            "stock_minimo": product.stock_minimo,
-            "categoria": product.categoria,
-            "nombre": product.nombre,
-        }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(
-                f"{settings.ML_SERVICE_URL}/models/predict-product",
-                json={"events": events_data, "product": product_data},
-                headers={"X-Internal-Token": settings.INTERNAL_SERVICE_TOKEN},
-            )
-        if r.status_code == 200:
-            result = r.json()
-            days_until_stockout = result.get("days_until_stockout")
-            daily_rate = result.get("daily_rate")
-
-            # Alerta de bajo stock — se suprime en restock porque el caller
-            # decide entre "compraste de más" o "compraste de menos"
-            low_coverage = days_until_stockout is not None and days_until_stockout < coverage_threshold
-            if low_coverage:
-                if not stock_increased:
-                    _delete_alert(product, "stock_low_coverage", db)
-                    _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db, None, days_until_stockout)
-                    await _notificate_low_coverage(user.firebase_token, product, days_until_stockout, user.email)
-            else:
-                # La cobertura se recuperó (p. ej. repusieron stock): la alerta ya no corresponde.
-                _clear_alert(product, "stock_low_coverage", product_alerts, db)
-
-            # Alerta de ritmo lento vs. vencimiento
-            slow_pace_risk = False
-            if (
-                product.vencimiento is not None
-                and days_until_stockout is not None
-                and daily_rate is not None
-                and daily_rate > 0
-            ):
-                days_until_expiry = (product.vencimiento - date.today()).days
-                if 0 < days_until_expiry < days_until_stockout:
-                    units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
-                    if units_wasted > 0:
-                        slow_pace_risk = True
-                        _delete_alert(product, "slow_pace", db)
-                        _create_alert(product, "slow_pace", "warning", db, units_wasted, None)
-                        await _notificate_slow_pace(user.firebase_token, product, days_until_expiry, units_wasted, user.email)
-            if not slow_pace_risk:
-                # Cambió el vencimiento, el ritmo de consumo o el stock: ya no se va a desperdiciar nada.
-                _clear_alert(product, "slow_pace", product_alerts, db)
-
-            return result
+        await _apply_ml_alerts(product, user, db, product_alerts, result, coverage_threshold, stock_increased)
     except Exception:
-        pass
-    return None
+        logger.exception("No se pudieron evaluar las alertas de ML del producto %s", product.id)
+        db.rollback()
+        return None
+
+    return result
+
+
+async def _apply_ml_alerts(
+    product: Product, user: AuthUser, db: Session, product_alerts: list[Alert],
+    result: dict, coverage_threshold: int, stock_increased: bool,
+) -> None:
+    """Crea o limpia las alertas de cobertura baja y ritmo lento según la predicción."""
+    days_until_stockout = result.get("days_until_stockout")
+    daily_rate = result.get("daily_rate")
+
+    # Alerta de bajo stock — se suprime en restock porque el caller
+    # decide entre "compraste de más" o "compraste de menos"
+    low_coverage = days_until_stockout is not None and days_until_stockout < coverage_threshold
+    if low_coverage:
+        if not stock_increased:
+            _delete_alert(product, "stock_low_coverage", db)
+            _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db, None, days_until_stockout)
+            await _notificate_low_coverage(user.firebase_token, product, days_until_stockout, user.email)
+    else:
+        # La cobertura se recuperó (p. ej. repusieron stock): la alerta ya no corresponde.
+        _clear_alert(product, "stock_low_coverage", product_alerts, db)
+
+    # Alerta de ritmo lento vs. vencimiento
+    slow_pace_risk = False
+    if (
+        product.vencimiento is not None
+        and days_until_stockout is not None
+        and daily_rate is not None
+        and daily_rate > 0
+    ):
+        days_until_expiry = (product.vencimiento - date.today()).days
+        if 0 < days_until_expiry < days_until_stockout:
+            units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
+            if units_wasted > 0:
+                slow_pace_risk = True
+                _delete_alert(product, "slow_pace", db)
+                _create_alert(product, "slow_pace", "warning", db, units_wasted, None)
+                await _notificate_slow_pace(user.firebase_token, product, days_until_expiry, units_wasted, user.email)
+    if not slow_pace_risk:
+        # Cambió el vencimiento, el ritmo de consumo o el stock: ya no se va a desperdiciar nada.
+        _clear_alert(product, "slow_pace", product_alerts, db)
 
 
 
@@ -525,6 +532,84 @@ async def create_product(
         f"{actor_email or user_id} cargó \"{product.nombre}\" (stock: {product.stock}) desde la app",
     )
     return product
+
+
+@router.get("/reposicion-sugerida", response_model=list[ReposicionSuggestion])
+async def get_reposicion_sugerida(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Para cada producto en riesgo de agotarse antes de la cobertura mínima
+    configurada, sugiere cuánto reponer para volver a esa cobertura, en base a
+    la tasa de consumo diaria que predice el ML.
+    """
+    user_id = current_user["sub"]
+    profile = _get_or_create_profile(user_id, db)
+    segment = profile.user_type or DEFAULT_USER_TYPE
+
+    products = (
+        db.query(Product)
+        .filter(Product.user_id == user_id, Product.stock > 0)
+        .all()
+    )
+
+    # Las lecturas de DB son sincrónicas y baratas; lo lento es el ML, así que se
+    # arman todas las entradas primero y las predicciones corren en paralelo.
+    inputs = []
+    for product in products:
+        events = (
+            db.query(ConsumptionEvent)
+            .filter(ConsumptionEvent.product_id == product.id)
+            .order_by(ConsumptionEvent.consumed_at.asc())
+            .all()
+        )
+        product_data = {
+            "id": product.id,
+            "stock": product.stock,
+            "stock_minimo": product.stock_minimo,
+            "categoria": product.categoria,
+            "nombre": product.nombre,
+        }
+        inputs.append((product, events, product_data))
+
+    semaphore = asyncio.Semaphore(_ML_CONCURRENCY)
+
+    async def _predict(events, product_data):
+        async with semaphore:
+            return await ml_client.predict(events, product_data, segment=segment)
+
+    predictions = await asyncio.gather(*(_predict(events, data) for _, events, data in inputs))
+
+    suggestions: list[ReposicionSuggestion] = []
+    for (product, _, _), result in zip(inputs, predictions):
+        coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
+        if not result:
+            continue
+
+        daily_rate = result.get("daily_rate") or 0.0
+        days_until_stockout = result.get("days_until_stockout")
+        if daily_rate <= 0 or days_until_stockout is None:
+            continue
+        if days_until_stockout >= coverage_threshold:
+            continue
+
+        suggested_qty = max(0, round(daily_rate * coverage_threshold) - product.stock)
+        if suggested_qty <= 0:
+            continue
+
+        suggestions.append(ReposicionSuggestion(
+            product_id=product.id,
+            nombre=product.nombre,
+            stock=product.stock,
+            imagen_url=product.imagen_url,
+            daily_rate=round(daily_rate, 3),
+            days_until_stockout=days_until_stockout,
+            suggested_qty=suggested_qty,
+        ))
+
+    suggestions.sort(key=lambda s: s.days_until_stockout if s.days_until_stockout is not None else 999)
+    return suggestions
 
 
 @router.get("/expired", response_model=list[ProductResponse])
