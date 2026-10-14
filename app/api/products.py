@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from datetime import date
 from uuid import UUID
 
@@ -27,6 +29,10 @@ from app.schemas.product import (
 )
 from app.services import ml_client
 from app.services.notifications import NotificationService
+
+logger = logging.getLogger(__name__)
+
+_ML_CONCURRENCY = 8
 
 
 class EventRequest(BaseModel):
@@ -245,6 +251,24 @@ async def _check_product_state(
     if not result:
         return None
 
+    # Las llamadas de red ya se toleran en ml_client; esto cubre el resto de la
+    # evaluación (DB, notificaciones): una falla acá no debe tumbar el alta o la
+    # edición del producto que la disparó, que ya quedó guardado.
+    try:
+        await _apply_ml_alerts(product, user, db, product_alerts, result, coverage_threshold, stock_increased)
+    except Exception:
+        logger.exception("No se pudieron evaluar las alertas de ML del producto %s", product.id)
+        db.rollback()
+        return None
+
+    return result
+
+
+async def _apply_ml_alerts(
+    product: Product, user: AuthUser, db: Session, product_alerts: list[Alert],
+    result: dict, coverage_threshold: int, stock_increased: bool,
+) -> None:
+    """Crea o limpia las alertas de cobertura baja y ritmo lento según la predicción."""
     days_until_stockout = result.get("days_until_stockout")
     daily_rate = result.get("daily_rate")
 
@@ -279,8 +303,6 @@ async def _check_product_state(
     if not slow_pace_risk:
         # Cambió el vencimiento, el ritmo de consumo o el stock: ya no se va a desperdiciar nada.
         _clear_alert(product, "slow_pace", product_alerts, db)
-
-    return result
 
 
 
@@ -532,9 +554,10 @@ async def get_reposicion_sugerida(
         .all()
     )
 
-    suggestions: list[ReposicionSuggestion] = []
+    # Las lecturas de DB son sincrónicas y baratas; lo lento es el ML, así que se
+    # arman todas las entradas primero y las predicciones corren en paralelo.
+    inputs = []
     for product in products:
-        coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
         events = (
             db.query(ConsumptionEvent)
             .filter(ConsumptionEvent.product_id == product.id)
@@ -548,7 +571,19 @@ async def get_reposicion_sugerida(
             "categoria": product.categoria,
             "nombre": product.nombre,
         }
-        result = await ml_client.predict(events, product_data, segment=segment)
+        inputs.append((product, events, product_data))
+
+    semaphore = asyncio.Semaphore(_ML_CONCURRENCY)
+
+    async def _predict(events, product_data):
+        async with semaphore:
+            return await ml_client.predict(events, product_data, segment=segment)
+
+    predictions = await asyncio.gather(*(_predict(events, data) for _, events, data in inputs))
+
+    suggestions: list[ReposicionSuggestion] = []
+    for (product, _, _), result in zip(inputs, predictions):
+        coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
         if not result:
             continue
 

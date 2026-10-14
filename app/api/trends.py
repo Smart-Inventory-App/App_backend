@@ -1,7 +1,6 @@
-from datetime import date, timedelta
+from datetime import datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -13,6 +12,13 @@ from app.schemas.trends import ConsumoPorDia, ProductoConsumo, TrendsResponse
 router = APIRouter(prefix="/trends", tags=["trends"])
 
 
+def _utc_day(moment: datetime):
+    """Día calendario UTC de un instante. Sin zona horaria se asume UTC."""
+    if moment.tzinfo is None:
+        return moment.date()
+    return moment.astimezone(timezone.utc).date()
+
+
 @router.get("/", response_model=TrendsResponse)
 def get_trends(
     period: int = Query(30, ge=1, le=365),
@@ -20,8 +26,10 @@ def get_trends(
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["sub"]
-    today = date.today()
+    # Todo en UTC: el servidor puede estar en otra zona y los eventos se guardan en UTC.
+    today = datetime.now(timezone.utc).date()
     since = today - timedelta(days=period - 1)
+    since_start = datetime.combine(since, time.min, tzinfo=timezone.utc)
 
     reversed_ids = db.query(ConsumptionEvent.reverses_event_id).filter(
         ConsumptionEvent.reverses_event_id.isnot(None)
@@ -30,7 +38,7 @@ def get_trends(
         db.query(ConsumptionEvent)
         .filter(
             ConsumptionEvent.user_id == user_id,
-            func.date(ConsumptionEvent.consumed_at) >= since,
+            ConsumptionEvent.consumed_at >= since_start,
             ConsumptionEvent.reverses_event_id.is_(None),
             ConsumptionEvent.id.notin_(reversed_ids),
         )
@@ -44,7 +52,7 @@ def get_trends(
     for e in events:
         if e.event_type != "consumed":
             continue
-        day = e.consumed_at.date().isoformat()
+        day = _utc_day(e.consumed_at).isoformat()
         per_day[day] = per_day.get(day, 0) + e.quantity
 
     consumo_por_dia = []
