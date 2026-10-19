@@ -157,7 +157,9 @@ Límites que valida `PUT /profile/` (responde `422` si no se cumplen; son los mi
 | `firstName`, `lastName`, `username` | hasta 20 caracteres |
 | `coverageDaysThreshold` (días de stock) | entero de 2 a 90 |
 | `expiryDaysThreshold` (días por vencer) | entero de 2 a 90 |
-| `alertCheckHour` | entero de 0 a 23 (hora UTC) |
+| `alertCheckHour` | entero de 0 a 23, **en hora UTC** |
+
+`alertCheckHour` es siempre una hora UTC: el chequeo diario de alertas corre cada hora en punto (UTC) y avisa a los usuarios cuya `alertCheckHour` coincide con la hora UTC actual. La app muestra y pide la hora de Argentina (UTC-3) y hace la conversión: **05:00 de Argentina se guarda como 8**, 08:00 de Argentina como 11.
 
 ### Health
 

@@ -62,7 +62,7 @@ class ProfileResponse(BaseModel):
     lastName: Optional[str] = None
     coverageDaysThreshold: int
     expiryDaysThreshold: int
-    alertCheckHour: int
+    alertCheckHour: int = Field(description="Hora UTC (0 a 23) del chequeo diario de alertas")
     userType: UserType
 
 
@@ -79,7 +79,7 @@ class ProfileUpdate(BaseModel):
     username: Optional[str] = Field(None, max_length=PROFILE_TEXT_MAX)
     coverageDaysThreshold: Optional[int] = Field(None, ge=ALERT_DAYS_MIN, le=ALERT_DAYS_MAX)
     expiryDaysThreshold: Optional[int] = Field(None, ge=ALERT_DAYS_MIN, le=ALERT_DAYS_MAX)
-    alertCheckHour: Optional[int] = Field(None, ge=0, le=23)
+    alertCheckHour: Optional[int] = Field(None, ge=0, le=23, description="Hora UTC (0 a 23) del chequeo diario de alertas")
     userType: Optional[UserType] = None
 
 class NotificationToken(BaseModel):
