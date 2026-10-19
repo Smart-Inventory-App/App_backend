@@ -329,3 +329,88 @@ def test_merge_reports_422_when_the_final_commit_fails(client, db, monkeypatch, 
     resp = client.post("/products/", json={"nombre": "Yerba", "categoria": "Cat", "stock": 5}, headers=AUTH)
 
     assert resp.status_code == 422
+
+
+# ── entrada de stock de un producto existente ─────────────────────────────────
+
+def test_restock_adds_stock_and_records_an_entry(client, db, no_alerts):
+    product = add_product(db, nombre="Leche", stock=3)
+
+    resp = client.post(f"/products/{product.id}/restock", json={"quantity": 5}, headers=AUTH)
+
+    assert resp.status_code == 201
+    assert resp.json()["stock"] == 8
+    assert resp.json()["merged"] is True
+    db.refresh(product)
+    assert product.stock == 8
+    event = db.query(ConsumptionEvent).filter(ConsumptionEvent.product_id == product.id).one()
+    assert (event.event_type, event.quantity) == ("restocked", 5)
+
+
+@pytest.mark.parametrize("quantity", [0, -2, 1000000])
+def test_restock_rejects_an_invalid_quantity(client, db, no_alerts, quantity):
+    product = add_product(db, stock=3)
+
+    resp = client.post(f"/products/{product.id}/restock", json={"quantity": quantity}, headers=AUTH)
+
+    assert resp.status_code == 422
+    db.refresh(product)
+    assert product.stock == 3
+
+
+def test_restock_rejects_a_stock_beyond_the_limit(client, db, no_alerts):
+    product = add_product(db, stock=999999)
+
+    resp = client.post(f"/products/{product.id}/restock", json={"quantity": 1}, headers=AUTH)
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Cantidad inválida"
+
+
+def test_restock_of_a_product_that_is_not_the_users_is_a_404(client, db, no_alerts):
+    other = add_product(db, user_id="00000000-0000-0000-0000-00000000dead")
+
+    resp = client.post(f"/products/{other.id}/restock", json={"quantity": 1}, headers=AUTH)
+
+    assert resp.status_code == 404
+
+
+def test_restock_checks_the_alerts_of_the_product(client, db, monkeypatch):
+    calls = []
+
+    async def record(product, user, profile, db, stock_increased=False):
+        calls.append((product.id, stock_increased))
+        return {"days_until_stockout": 1}
+
+    sent = []
+
+    async def understock(token, product, days, email):
+        sent.append(days)
+
+    monkeypatch.setattr(products_api, "_check_product_state", record)
+    monkeypatch.setattr(products_api, "_notificate_understock", understock)
+    product = add_product(db, stock=1)
+
+    resp = client.post(f"/products/{product.id}/restock", json={"quantity": 1}, headers=AUTH)
+
+    assert resp.status_code == 201
+    assert calls == [(product.id, True)]
+    assert sent == [1]
+
+
+def test_restock_notifies_when_the_new_stock_is_too_much(client, db, monkeypatch):
+    async def far(product, user, profile, db, stock_increased=False):
+        return {"days_until_stockout": 10_000}
+
+    sent = []
+
+    async def overstock(token, product, days, email):
+        sent.append(days)
+
+    monkeypatch.setattr(products_api, "_check_product_state", far)
+    monkeypatch.setattr(products_api, "_notificate_overstock", overstock)
+    product = add_product(db, stock=1)
+
+    client.post(f"/products/{product.id}/restock", json={"quantity": 1}, headers=AUTH)
+
+    assert sent == [10_000]

@@ -41,6 +41,10 @@ class EventRequest(BaseModel):
     note: Optional[str] = Field(None, max_length=50)
 
 
+class RestockRequest(BaseModel):
+    quantity: int = Field(..., gt=0, le=999999)
+
+
 class EventCorrection(BaseModel):
     event_type: Literal["consumed", "expired", "restocked"]
     quantity: int = Field(..., le=999999)
@@ -757,6 +761,50 @@ async def register_event(
     profile = _get_or_create_profile(user_id, db)
     await _check_product_state(product, user, profile, db)
     return {"event_type": data.event_type, "quantity": data.quantity, "remaining_stock": product.stock}
+
+
+@router.post("/{product_id}/restock", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+async def restock_product(
+    product_id: int,
+    data: RestockRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Entrada de stock de un producto que el usuario ya tiene cargado (sin volver a cargar sus datos)."""
+    user_id = current_user["sub"]
+    actor_email = current_user.get("email")
+    product = _get_user_product(product_id, user_id, db)
+    if product.stock + data.quantity > 999999:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cantidad inválida",
+        )
+    product.stock += data.quantity
+    db.add(ConsumptionEvent(
+        product_id=product.id,
+        user_id=user_id,
+        quantity=data.quantity,
+        event_type="restocked",
+        actor_email=actor_email,
+    ))
+    db.commit()
+    db.refresh(product)
+    _log_activity(
+        db, "product_updated", actor_email, user_id, actor_email,
+        f"{actor_email or user_id} sumó {data.quantity} unidades a \"{product.nombre}\" (stock: {product.stock})",
+    )
+    user = _get_user(user_id, db)
+    profile = _get_or_create_profile(user_id, db)
+    result = await _check_product_state(product, user, profile, db, stock_increased=True)
+    if result:
+        days_until_stockout = result.get("days_until_stockout")
+        coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
+        overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
+        if days_until_stockout is not None and days_until_stockout > overstock_threshold:
+            await _notificate_overstock(user.firebase_token, product, days_until_stockout, user.email)
+        elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
+            await _notificate_understock(user.firebase_token, product, days_until_stockout, user.email)
+    return ProductResponse.model_validate(product, from_attributes=True).model_copy(update={"merged": True})
 
 
 def _get_own_consumption_event(product_id: int, event_id: int, db: Session) -> ConsumptionEvent:
