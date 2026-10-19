@@ -692,3 +692,199 @@ def test_group_suggestions_only_include_the_users_products(client, db, no_alerts
 
 def test_group_suggestions_require_a_search_text(client, db, no_alerts):
     assert client.get("/products/groups", headers=AUTH).status_code == 422
+
+
+# ── últimos cambios de stock ──────────────────────────────────────────────────
+
+from datetime import datetime  # noqa: E402
+
+CREATED = datetime(2026, 9, 1, 8, 0)
+
+
+def at_time(day: int, hour: int = 12) -> datetime:
+    return datetime(2026, 10, day, hour, 0)
+
+
+def add_event(db, product, quantity, event_type, when, note=None, user_id=TEST_USER_ID, reverses=None):
+    event = ConsumptionEvent(
+        product_id=product.id, user_id=user_id, quantity=quantity, event_type=event_type,
+        consumed_at=when, note=note, reverses_event_id=reverses,
+    )
+    db.add(event)
+    db.commit()
+    return event
+
+
+def get_changes(client, **params):
+    return client.get("/products/changes", params=params, headers=AUTH)
+
+
+def summary(resp):
+    return [(c["kind"], c["stock_before"], c["stock_after"], c["producto"]["nombre"]) for c in resp.json()]
+
+
+def test_no_products_means_no_changes(client, db, no_alerts):
+    assert get_changes(client).json() == []
+
+
+def test_a_product_that_was_just_loaded_shows_up_as_an_entry_from_zero(client, db, no_alerts):
+    add_product(db, nombre="Leche", stock=8, created_at=CREATED)
+
+    body = get_changes(client).json()
+
+    assert summary(get_changes(client)) == [("entrada", 0, 8, "Leche")]
+    assert body[0]["quantity"] == 8
+    assert body[0]["id"].startswith("created-")
+
+
+def test_the_stock_before_and_after_of_each_change_is_rebuilt_from_the_current_stock(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=20, created_at=CREATED)
+    add_event(db, leche, 5, "restocked", at_time(2))
+    add_event(db, leche, 3, "consumed", at_time(3))
+
+    resp = get_changes(client)
+
+    assert summary(resp) == [
+        ("salida", 23, 20, "Leche"),
+        ("entrada", 18, 23, "Leche"),
+        ("entrada", 0, 18, "Leche"),
+    ]
+
+
+def test_changes_come_from_the_newest_to_the_oldest_across_products(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=at_time(1))
+    yogur = add_product(db, nombre="Yogur", stock=7, created_at=at_time(2))
+    add_event(db, leche, 2, "consumed", at_time(5))
+    add_event(db, yogur, 1, "restocked", at_time(4))
+
+    assert [c[3] for c in summary(get_changes(client))][:2] == ["Leche", "Yogur"]
+
+
+def test_exits_sales_rentals_and_expirations_are_all_exits(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=1, created_at=CREATED)
+    for day, event_type in enumerate(["consumed", "sold", "rented", "expired"], start=2):
+        add_event(db, leche, 1, event_type, at_time(day))
+
+    kinds = [c["kind"] for c in get_changes(client, limit=10).json()]
+
+    assert kinds[:4] == ["salida"] * 4
+
+
+def test_a_stock_edit_is_a_modification_and_not_an_entry_or_an_exit(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
+    add_event(db, leche, 4, "restocked", at_time(2), note="Modificación de stock")
+    add_event(db, leche, 1, "consumed", at_time(3), note="Modificación de stock")
+
+    kinds = [c["kind"] for c in get_changes(client, limit=10).json()]
+
+    assert kinds[:2] == ["modificacion", "modificacion"]
+
+
+def test_editing_the_stock_of_a_product_through_the_api_leaves_a_modification(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
+
+    client.put(f"/products/{leche.id}", json={"stock": 14}, headers=AUTH)
+    client.put(f"/products/{leche.id}", json={"stock": 9}, headers=AUTH)
+
+    assert summary(get_changes(client))[:2] == [("modificacion", 14, 9, "Leche"), ("modificacion", 10, 14, "Leche")]
+
+
+def test_entries_and_exits_made_through_the_api_are_listed_with_their_kind(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
+
+    client.post(f"/products/{leche.id}/restock", json={"quantity": 5}, headers=AUTH)
+    client.post(f"/products/{leche.id}/events", json={"event_type": "sold", "quantity": 3}, headers=AUTH)
+
+    assert summary(get_changes(client))[:2] == [("salida", 15, 12, "Leche"), ("entrada", 10, 15, "Leche")]
+
+
+def test_loading_a_product_again_through_the_api_is_an_entry_of_the_added_stock(client, db, no_alerts):
+    first = client.post("/products/", json={"nombre": "Yerba", "categoria": "Almacen", "stock": 3}, headers=AUTH).json()
+    client.post("/products/", json={"nombre": "Yerba", "categoria": "Almacen", "stock": 4}, headers=AUTH)
+
+    resp = get_changes(client)
+
+    assert summary(resp)[:2] == [("entrada", 3, 7, "Yerba"), ("entrada", 0, 3, "Yerba")]
+    assert resp.json()[0]["producto"]["id"] == first["id"]
+
+
+def test_a_correction_shows_the_corrected_movement_and_not_the_reversal(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
+    client.post(f"/products/{leche.id}/events", json={"event_type": "consumed", "quantity": 4}, headers=AUTH)
+    event = db.query(ConsumptionEvent).one()
+
+    client.put(f"/products/{leche.id}/events/{event.id}", json={"event_type": "sold", "quantity": 4}, headers=AUTH)
+
+    kinds = [c["kind"] for c in get_changes(client, limit=10).json()]
+    assert kinds == ["salida", "entrada"]
+
+
+def test_the_limit_is_respected_and_validated(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=30, created_at=CREATED)
+    for day in range(2, 9):
+        add_event(db, leche, 1, "restocked", at_time(day))
+
+    assert len(get_changes(client).json()) == 5
+    assert len(get_changes(client, limit=2).json()) == 2
+    assert get_changes(client, limit=0).status_code == 422
+    assert get_changes(client, limit=51).status_code == 422
+
+
+def test_the_next_pages_of_changes_are_asked_with_an_offset(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=30, created_at=CREATED)
+    for day in range(2, 8):
+        add_event(db, leche, 1, "restocked", at_time(day))
+
+    everything = [c["id"] for c in get_changes(client, limit=50).json()]
+    first = [c["id"] for c in get_changes(client, limit=3).json()]
+    second = [c["id"] for c in get_changes(client, limit=3, offset=3).json()]
+    third = [c["id"] for c in get_changes(client, limit=3, offset=6).json()]
+
+    assert first + second + third == everything
+    assert len(everything) == 7
+    assert len(third) == 1
+
+
+def test_an_offset_beyond_the_last_change_gives_an_empty_list(client, db, no_alerts):
+    add_product(db, nombre="Leche", stock=3, created_at=CREATED)
+
+    assert get_changes(client, offset=10).json() == []
+
+
+def test_the_offset_cannot_be_negative(client, db, no_alerts):
+    assert get_changes(client, offset=-1).status_code == 422
+
+
+def test_each_change_carries_the_whole_product(client, db, no_alerts):
+    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=4, created_at=CREATED, imagen_url="https://cdn/a.jpg")
+
+    product = get_changes(client).json()[0]["producto"]
+
+    assert (product["nombre"], product["marca"], product["categoria"], product["imagen_url"]) == ("Leche", "Ser", "Lacteos", "https://cdn/a.jpg")
+
+
+def test_only_the_users_own_changes_are_listed(client, db, no_alerts):
+    mine = add_product(db, nombre="Mia", stock=1, created_at=CREATED)
+    other = add_product(db, nombre="Ajena", stock=5, created_at=CREATED, user_id="00000000-0000-0000-0000-00000000dead")
+    add_event(db, other, 2, "consumed", at_time(3), user_id="00000000-0000-0000-0000-00000000dead")
+
+    assert [c[3] for c in summary(get_changes(client, limit=10))] == ["Mia"]
+    assert mine.id != other.id
+
+
+def test_a_product_without_a_load_date_has_no_initial_entry(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=3, created_at=None)
+    add_event(db, leche, 1, "consumed", at_time(3))
+
+    assert summary(get_changes(client, limit=10)) == [("salida", 4, 3, "Leche")]
+
+
+def test_changes_require_a_token(client, db):
+    from app.core.security import get_current_user
+    from app.main import app
+
+    override = app.dependency_overrides.pop(get_current_user)
+    try:
+        assert client.get("/products/changes").status_code in (401, 403)
+    finally:
+        app.dependency_overrides[get_current_user] = override

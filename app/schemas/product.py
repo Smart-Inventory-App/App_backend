@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from app.core import barcode
 
@@ -114,3 +114,15 @@ class ProductGroupSummary(BaseModel):
 
 class ProductGroupDetail(ProductGroupSummary):
     productos: list[ProductResponse]
+
+
+class StockChange(BaseModel):
+    """Un cambio del stock de un producto: una entrada, una salida o una modificación, con el stock antes y después."""
+
+    id: str
+    kind: Literal["entrada", "salida", "modificacion"]
+    stock_before: int
+    stock_after: int
+    quantity: int
+    occurred_at: datetime
+    producto: ProductResponse

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -28,6 +28,7 @@ from app.schemas.product import (
     ProductSuggestion,
     ProductUpdate,
     ReposicionSuggestion,
+    StockChange,
 )
 from app.services import ml_client
 from app.utils.sorting import alphabetical_key
@@ -52,6 +53,10 @@ class EventCorrection(BaseModel):
     event_type: Literal["consumed", "expired", "sold", "rented", "restocked"]
     quantity: int = Field(..., le=999999)
     note: Optional[str] = Field(None, max_length=50)
+
+
+# Nota con la que queda asentado un cambio de stock hecho al editar el producto (no una entrada ni una salida)
+STOCK_EDIT_NOTE = "Modificación de stock"
 
 
 def _stock_effect(event_type: str, quantity: int) -> int:
@@ -434,6 +439,88 @@ def _summarize_group(lots: list[Product]) -> ProductGroupSummary:
     )
 
 
+def _naive_utc(value: datetime) -> datetime:
+    """Los instantes se comparan sin zona (en UTC): la base devuelve unos con zona y otros sin ella."""
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+@router.get("/changes", response_model=list[StockChange])
+async def recent_stock_changes(
+    limit: int = Query(5, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Los últimos cambios de stock del usuario, del más nuevo al más viejo.
+
+    Incluye las entradas (ingreso de un producto existente o nuevo), las salidas y las modificaciones hechas al
+    editar un producto. Cada cambio trae el stock antes y después, que se reconstruye hacia atrás desde el stock
+    actual con los movimientos del producto. Las correcciones no aparecen: queda el movimiento corregido.
+
+    `offset` salta esa cantidad de cambios (los más nuevos) para pedir las páginas siguientes.
+    """
+    user_id = current_user["sub"]
+    products = {p.id: p for p in db.query(Product).filter(Product.user_id == user_id).all()}
+    events = (
+        db.query(ConsumptionEvent)
+        .filter(ConsumptionEvent.user_id == user_id)
+        .order_by(ConsumptionEvent.consumed_at.desc(), ConsumptionEvent.id.desc())
+        .all()
+    )
+    reversed_ids = {e.reverses_event_id for e in events if e.reverses_event_id is not None}
+
+    running = {product_id: product.stock for product_id, product in products.items()}
+    changes: list[tuple[tuple[datetime, int], StockChange]] = []
+    for event in events:
+        product = products.get(event.product_id)
+        if product is None:
+            continue
+        after = running[product.id]
+        before = after - _stock_effect(event.event_type, event.quantity)
+        running[product.id] = before
+        if event.reverses_event_id is not None or event.id in reversed_ids:
+            continue
+        if (event.note or "").startswith(STOCK_EDIT_NOTE):
+            kind = "modificacion"
+        else:
+            kind = "entrada" if event.event_type == "restocked" else "salida"
+        changes.append((
+            (_naive_utc(event.consumed_at), 1 + event.id),
+            StockChange(
+                id=f"event-{event.id}",
+                kind=kind,
+                stock_before=before,
+                stock_after=after,
+                quantity=event.quantity,
+                occurred_at=event.consumed_at,
+                producto=ProductResponse.model_validate(product, from_attributes=True),
+            ),
+        ))
+
+    # Lo que queda después de deshacer todos los movimientos es el stock con el que se cargó el producto
+    for product_id, product in products.items():
+        initial = running[product_id]
+        if product.created_at is None or initial <= 0:
+            continue
+        changes.append((
+            (_naive_utc(product.created_at), 0),
+            StockChange(
+                id=f"created-{product_id}",
+                kind="entrada",
+                stock_before=0,
+                stock_after=initial,
+                quantity=initial,
+                occurred_at=product.created_at,
+                producto=ProductResponse.model_validate(product, from_attributes=True),
+            ),
+        ))
+
+    changes.sort(key=lambda item: item[0], reverse=True)
+    return [change for _, change in changes[offset:offset + limit]]
+
+
 @router.get("/groups", response_model=list[ProductGroupSummary])
 async def search_product_groups(
     q: str = Query(..., min_length=1),
@@ -756,6 +843,7 @@ async def update_product(
             quantity=old_stock - new_stock_value,
             event_type="consumed",
             actor_email=actor_email,
+            note=STOCK_EDIT_NOTE,
         ))
     elif stock_increased:
         db.add(ConsumptionEvent(
@@ -764,6 +852,7 @@ async def update_product(
             quantity=new_stock_value - old_stock,
             event_type="restocked",
             actor_email=actor_email,
+            note=STOCK_EDIT_NOTE,
         ))
 
     changed_fields = list(update_dict.keys())
