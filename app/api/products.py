@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,12 +22,16 @@ from app.models.user import AuthUser
 from app.schemas.product import (
     ProductCreate,
     ProductDefaults,
+    ProductGroupDetail,
+    ProductGroupSummary,
     ProductResponse,
     ProductSuggestion,
     ProductUpdate,
     ReposicionSuggestion,
+    StockChange,
 )
 from app.services import ml_client
+from app.utils.sorting import alphabetical_key
 from app.services.notifications import NotificationService
 
 logger = logging.getLogger(__name__)
@@ -36,15 +40,23 @@ _ML_CONCURRENCY = 8
 
 
 class EventRequest(BaseModel):
-    event_type: Literal["consumed", "expired"]
+    event_type: Literal["consumed", "expired", "sold", "rented"]
     quantity: int = Field(..., le=999999)
     note: Optional[str] = Field(None, max_length=50)
+
+
+class RestockRequest(BaseModel):
+    quantity: int = Field(..., gt=0, le=999999)
 
 
 class EventCorrection(BaseModel):
-    event_type: Literal["consumed", "expired", "restocked"]
+    event_type: Literal["consumed", "expired", "sold", "rented", "restocked"]
     quantity: int = Field(..., le=999999)
     note: Optional[str] = Field(None, max_length=50)
+
+
+# Nota con la que queda asentado un cambio de stock hecho al editar el producto (no una entrada ni una salida)
+STOCK_EDIT_NOTE = "Modificación de stock"
 
 
 def _stock_effect(event_type: str, quantity: int) -> int:
@@ -321,9 +333,12 @@ async def list_products(
     ubicacion: Optional[str] = Query(None),
     sort_by: Optional[str] = Query(None, pattern="^(nombre|stock|vencimiento|categoria)$"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+    limit: Optional[int] = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Productos del usuario, con filtros y orden. Sin `limit` trae todos; con `limit` y `offset` trae una página."""
     user_id = current_user["sub"]
     query = db.query(Product).filter(Product.user_id == user_id)
     if search:
@@ -335,11 +350,28 @@ async def list_products(
         query = query.filter(Product.categoria.ilike(categoria))
     if ubicacion:
         query = query.filter(Product.ubicacion.ilike(ubicacion))
+    page_end = offset + limit if limit is not None else None
+    if sort_by == "nombre":
+        # Orden alfabético real, sin distinguir mayúsculas ni tildes (la base ordenaría las mayúsculas primero)
+        ordered = sorted(
+            query.all(),
+            key=lambda product: (alphabetical_key(product.nombre), product.nombre, product.id),
+            reverse=sort_dir == "desc",
+        )
+        return ordered[offset:page_end]
+    if sort_by == "vencimiento":
+        # Los productos sin fecha de vencimiento no entran en este orden, ni creciente ni decreciente
+        query = query.filter(Product.vencimiento.isnot(None))
     if sort_by:
         column = SORTABLE_FIELDS[sort_by]
-        query = query.order_by(column.desc() if sort_dir == "desc" else column.asc())
+        # El id desempata: así una página siguiente nunca repite ni se saltea productos con el mismo valor
+        query = query.order_by(column.desc() if sort_dir == "desc" else column.asc(), Product.id.asc())
     else:
-        query = query.order_by(Product.created_at.desc())
+        query = query.order_by(Product.created_at.desc(), Product.id.desc())
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
     return query.all()
 
 
@@ -380,6 +412,166 @@ def _to_suggestion(p: Product) -> ProductSuggestion:
         descripcion=p.descripcion,
         imagen_url=p.imagen_url,
         codigo_barras=p.codigo_barras,
+    )
+
+
+def _group_key(nombre: str, categoria: str) -> tuple[str, str]:
+    """Qué cuenta como "el mismo producto" para el stock total: igual nombre y categoría, sin distinguir
+    mayúsculas, tildes ni espacios sobrantes.
+
+    La marca no entra en la clave, ni nada de lo que cambia entre lotes (vencimiento, código de barras,
+    ubicación, imagen, stock).
+    """
+
+    def norm(text: Optional[str]) -> str:
+        return alphabetical_key(" ".join((text or "").split()))
+
+    return (norm(nombre), norm(categoria))
+
+
+def _user_groups(user_id: str, db: Session) -> dict[tuple[str, str], list[Product]]:
+    groups: dict[tuple[str, str], list[Product]] = {}
+    products = db.query(Product).filter(Product.user_id == user_id).order_by(Product.id.asc()).all()
+    for product in products:
+        groups.setdefault(_group_key(product.nombre, product.categoria), []).append(product)
+    return groups
+
+
+def _summarize_group(lots: list[Product]) -> ProductGroupSummary:
+    first = lots[0]
+    expiries = [p.vencimiento for p in lots if p.stock > 0 and p.vencimiento]
+    return ProductGroupSummary(
+        nombre=first.nombre,
+        categoria=first.categoria,
+        stock_total=sum(p.stock for p in lots),
+        lotes=len(lots),
+        proximo_vencimiento=min(expiries) if expiries else None,
+    )
+
+
+def _naive_utc(value: datetime) -> datetime:
+    """Los instantes se comparan sin zona (en UTC): la base devuelve unos con zona y otros sin ella."""
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+@router.get("/changes", response_model=list[StockChange])
+async def recent_stock_changes(
+    limit: int = Query(5, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Los últimos cambios de stock del usuario, del más nuevo al más viejo.
+
+    Incluye las entradas (ingreso de un producto existente o nuevo), las salidas y las modificaciones hechas al
+    editar un producto. Cada cambio trae el stock antes y después, que se reconstruye hacia atrás desde el stock
+    actual con los movimientos del producto. Las correcciones no aparecen: queda el movimiento corregido.
+
+    `offset` salta esa cantidad de cambios (los más nuevos) para pedir las páginas siguientes.
+    """
+    user_id = current_user["sub"]
+    products = {p.id: p for p in db.query(Product).filter(Product.user_id == user_id).all()}
+    events = (
+        db.query(ConsumptionEvent)
+        .filter(ConsumptionEvent.user_id == user_id)
+        .order_by(ConsumptionEvent.consumed_at.desc(), ConsumptionEvent.id.desc())
+        .all()
+    )
+    reversed_ids = {e.reverses_event_id for e in events if e.reverses_event_id is not None}
+
+    running = {product_id: product.stock for product_id, product in products.items()}
+    changes: list[tuple[tuple[datetime, int], StockChange]] = []
+    for event in events:
+        product = products.get(event.product_id)
+        if product is None:
+            continue
+        after = running[product.id]
+        before = after - _stock_effect(event.event_type, event.quantity)
+        running[product.id] = before
+        if event.reverses_event_id is not None or event.id in reversed_ids:
+            continue
+        if (event.note or "").startswith(STOCK_EDIT_NOTE):
+            kind = "modificacion"
+        else:
+            kind = "entrada" if event.event_type == "restocked" else "salida"
+        changes.append((
+            (_naive_utc(event.consumed_at), 1 + event.id),
+            StockChange(
+                id=f"event-{event.id}",
+                kind=kind,
+                stock_before=before,
+                stock_after=after,
+                quantity=event.quantity,
+                occurred_at=event.consumed_at,
+                producto=ProductResponse.model_validate(product, from_attributes=True),
+            ),
+        ))
+
+    # Lo que queda después de deshacer todos los movimientos es el stock con el que se cargó el producto
+    for product_id, product in products.items():
+        initial = running[product_id]
+        if product.created_at is None or initial <= 0:
+            continue
+        changes.append((
+            (_naive_utc(product.created_at), 0),
+            StockChange(
+                id=f"created-{product_id}",
+                kind="entrada",
+                stock_before=0,
+                stock_after=initial,
+                quantity=initial,
+                occurred_at=product.created_at,
+                producto=ProductResponse.model_validate(product, from_attributes=True),
+            ),
+        ))
+
+    changes.sort(key=lambda item: item[0], reverse=True)
+    return [change for _, change in changes[offset:offset + limit]]
+
+
+@router.get("/groups", response_model=list[ProductGroupSummary])
+async def search_product_groups(
+    q: str = Query(..., min_length=1),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Productos del usuario agrupados por nombre y categoría, cuyo nombre contiene `q`.
+
+    La búsqueda no distingue mayúsculas ni tildes. Cada grupo trae el stock sumado de todos sus lotes.
+    """
+    needle = alphabetical_key(" ".join(q.split()))
+    if not needle:
+        return []
+    groups = [
+        _summarize_group(lots)
+        for key, lots in _user_groups(current_user["sub"], db).items()
+        if needle in key[0]
+    ]
+    groups.sort(key=lambda g: (alphabetical_key(g.nombre), alphabetical_key(g.categoria)))
+    return groups[:10]
+
+
+@router.get("/group", response_model=ProductGroupDetail)
+async def get_product_group(
+    nombre: str = Query(..., min_length=1),
+    categoria: str = Query(..., min_length=1),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Todos los productos del usuario con ese nombre y categoría (de cualquier marca), y su stock total.
+
+    Salen ordenados por vencimiento (los que no vencen, al final).
+    """
+    lots = _user_groups(current_user["sub"], db).get(_group_key(nombre, categoria))
+    if not lots:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
+    summary = _summarize_group(lots)
+    ordered = sorted(lots, key=lambda p: (p.vencimiento is None, p.vencimiento or date.max, p.id))
+    return ProductGroupDetail(
+        **summary.model_dump(),
+        productos=[ProductResponse.model_validate(p, from_attributes=True) for p in ordered],
     )
 
 
@@ -661,6 +853,7 @@ async def update_product(
             quantity=old_stock - new_stock_value,
             event_type="consumed",
             actor_email=actor_email,
+            note=STOCK_EDIT_NOTE,
         ))
     elif stock_increased:
         db.add(ConsumptionEvent(
@@ -669,6 +862,7 @@ async def update_product(
             quantity=new_stock_value - old_stock,
             event_type="restocked",
             actor_email=actor_email,
+            note=STOCK_EDIT_NOTE,
         ))
 
     changed_fields = list(update_dict.keys())
@@ -757,6 +951,50 @@ async def register_event(
     profile = _get_or_create_profile(user_id, db)
     await _check_product_state(product, user, profile, db)
     return {"event_type": data.event_type, "quantity": data.quantity, "remaining_stock": product.stock}
+
+
+@router.post("/{product_id}/restock", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+async def restock_product(
+    product_id: int,
+    data: RestockRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Entrada de stock de un producto que el usuario ya tiene cargado (sin volver a cargar sus datos)."""
+    user_id = current_user["sub"]
+    actor_email = current_user.get("email")
+    product = _get_user_product(product_id, user_id, db)
+    if product.stock + data.quantity > 999999:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cantidad inválida",
+        )
+    product.stock += data.quantity
+    db.add(ConsumptionEvent(
+        product_id=product.id,
+        user_id=user_id,
+        quantity=data.quantity,
+        event_type="restocked",
+        actor_email=actor_email,
+    ))
+    db.commit()
+    db.refresh(product)
+    _log_activity(
+        db, "product_updated", actor_email, user_id, actor_email,
+        f"{actor_email or user_id} sumó {data.quantity} unidades a \"{product.nombre}\" (stock: {product.stock})",
+    )
+    user = _get_user(user_id, db)
+    profile = _get_or_create_profile(user_id, db)
+    result = await _check_product_state(product, user, profile, db, stock_increased=True)
+    if result:
+        days_until_stockout = result.get("days_until_stockout")
+        coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
+        overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
+        if days_until_stockout is not None and days_until_stockout > overstock_threshold:
+            await _notificate_overstock(user.firebase_token, product, days_until_stockout, user.email)
+        elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
+            await _notificate_understock(user.firebase_token, product, days_until_stockout, user.email)
+    return ProductResponse.model_validate(product, from_attributes=True).model_copy(update={"merged": True})
 
 
 def _get_own_consumption_event(product_id: int, event_id: int, db: Session) -> ConsumptionEvent:

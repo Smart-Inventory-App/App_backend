@@ -11,105 +11,61 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 # TODO: Implementar paginación
 
-@router.get("/", response_model=list[AlertResponse])
-async def get_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    alerts = (
-        db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
-            .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == UUID(current_user["sub"]))
-            .all()
+def alerts_of_user(db: Session, user_id: str, *filters) -> list[AlertResponse]:
+    """Alertas del usuario con los datos del producto que necesita la app para mostrarlas."""
+    rows = (
+        db.query(
+            Alert,
+            Product.nombre,
+            Product.stock,
+            Product.vencimiento,
+            Product.imagen_url,
+            Product.categoria,
+            Product.marca,
         )
+        .join(Product, Alert.product_id == Product.id)
+        .filter(Alert.user_id == UUID(user_id), *filters)
+        .all()
+    )
     return [
         AlertResponse(
-            id=alert[0].id,
-            user_id=alert[0].user_id,
-            product_id=alert[0].product_id,
-            type=alert[0].type,
-            level=alert[0].level,
-            units_wasted=alert[0].units_wasted,
-            days_until_stockout=alert[0].days_until_stockout,
-            image_url=alert[4] if alert[4] else None,
-            product_name=alert[1] if alert[1] else None,
-            product_stock=alert[2] if alert[2] else None,
-            product_expiry=alert[3] if alert[3] else None,
+            id=alert.id,
+            user_id=alert.user_id,
+            product_id=alert.product_id,
+            type=alert.type,
+            level=alert.level,
+            units_wasted=alert.units_wasted,
+            days_until_stockout=alert.days_until_stockout,
+            image_url=imagen_url or None,
+            product_name=nombre or None,
+            product_stock=stock,
+            product_expiry=vencimiento or None,
+            product_category=categoria or None,
+            product_brand=marca or None,
         )
-        for alert in alerts
+        for alert, nombre, stock, vencimiento, imagen_url, categoria, marca in rows
     ]
+
+
+@router.get("/", response_model=list[AlertResponse])
+async def get_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    return alerts_of_user(db, current_user["sub"])
+
 
 @router.get("/critical_alerts", response_model=list[AlertResponse])
 async def get_critical_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    alerts = (
-        db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
-            .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.level == "critical")
-            .all()
-        )
-    return [
-        AlertResponse(
-            id=alert[0].id,
-            user_id=alert[0].user_id,
-            product_id=alert[0].product_id,
-            type=alert[0].type,
-            level=alert[0].level,
-            units_wasted=alert[0].units_wasted,
-            days_until_stockout=alert[0].days_until_stockout,
-            image_url=alert[4] if alert[4] else None,
-            product_name=alert[1] if alert[1] else None,
-            product_stock=alert[2] if alert[2] else None,
-            product_expiry=alert[3] if alert[3] else None,
-        )
-        for alert in alerts
-    ]
+    return alerts_of_user(db, current_user["sub"], Alert.level == "critical")
+
 
 @router.get("/expiry_alerts", response_model=list[AlertResponse])
 async def get_expiry_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    alerts = (
-        db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
-            .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.type.in_(["expiry", "slow_pace"]))
-            .all()
-        )
-    return [
-        AlertResponse(
-            id=alert[0].id,
-            user_id=alert[0].user_id,
-            product_id=alert[0].product_id,
-            type=alert[0].type,
-            level=alert[0].level,
-            units_wasted=alert[0].units_wasted,
-            days_until_stockout=alert[0].days_until_stockout,
-            image_url=alert[4] if alert[4] else None,
-            product_name=alert[1] if alert[1] else None,
-            product_stock=alert[2] if alert[2] else None,
-            product_expiry=alert[3] if alert[3] else None,
-        )
-        for alert in alerts
-    ]
+    return alerts_of_user(db, current_user["sub"], Alert.type.in_(["expiry", "slow_pace"]))
+
 
 @router.get("/stock_alerts", response_model=list[AlertResponse])
 async def get_stock_alerts(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    alerts = (
-        db.query(Alert, Product.nombre, Product.stock, Product.vencimiento, Product.imagen_url)
-            .join(Product, Alert.product_id == Product.id)
-            .filter(Alert.user_id == UUID(current_user["sub"]), Alert.type == "stock_low_coverage")
-            .all()
-        )
-    return [
-        AlertResponse(
-            id=alert[0].id,
-            user_id=alert[0].user_id,
-            product_id=alert[0].product_id,
-            type=alert[0].type,
-            level=alert[0].level,
-            units_wasted=alert[0].units_wasted,
-            days_until_stockout=alert[0].days_until_stockout,
-            image_url=alert[4] if alert[4] else None,
-            product_name=alert[1] if alert[1] else None,
-            product_stock=alert[2] if alert[2] else None,
-            product_expiry=alert[3] if alert[3] else None,
-        )
-        for alert in alerts
-    ]
+    return alerts_of_user(db, current_user["sub"], Alert.type == "stock_low_coverage")
+
 
 @router.get("/summary", response_model=dict)
 async def get_alert_summary(current_user=Depends(get_current_user), db: Session = Depends(get_db)):

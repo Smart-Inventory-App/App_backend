@@ -2,6 +2,11 @@ from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, func
 from app.core.database import Base
 
 
+# Salidas que cuentan como demanda real (métricas y predicción): el producto se usó, se vendió o se alquiló.
+# "expired" no entra: es una pérdida, no una demanda. "restocked" es una entrada.
+CONSUMPTION_EVENT_TYPES = ("consumed", "sold", "rented")
+
+
 class ConsumptionEvent(Base):
     __tablename__ = "consumption_events"
 
@@ -9,7 +14,8 @@ class ConsumptionEvent(Base):
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(String, nullable=False, index=True)
     quantity = Column(Integer, nullable=False)
-    # "consumed": bajó el stock por uso real; "expired": el producto venció sin consumirse
+    # "consumed": bajó el stock por uso real; "sold": se vendió; "rented": se alquiló;
+    # "expired": el producto venció sin consumirse; "restocked": entró stock
     event_type = Column(String, nullable=False, server_default="consumed")
     consumed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     # Quién generó el movimiento (distinto de user_id, que es de quién es el inventario)

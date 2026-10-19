@@ -38,6 +38,41 @@ def test_get_alerts_lists_own_alerts_with_product_info(client, db):
     assert body[0]["product_stock"] == 5
 
 
+def test_alerts_include_the_category_and_brand_of_the_product(client, db):
+    product, _ = add_product_with_alert(db)
+    product.marca = "La Serenisima"
+    db.commit()
+
+    body = client.get("/alerts/", headers=AUTH).json()
+
+    assert body[0]["product_category"] == "Lacteo"
+    assert body[0]["product_brand"] == "La Serenisima"
+
+
+def test_a_product_without_brand_gives_no_brand(client, db):
+    add_product_with_alert(db)
+
+    assert client.get("/alerts/", headers=AUTH).json()[0]["product_brand"] is None
+
+
+def test_a_product_out_of_stock_still_gives_its_stock_as_zero(client, db):
+    product, _ = add_product_with_alert(db)
+    product.stock = 0
+    db.commit()
+
+    assert client.get("/alerts/", headers=AUTH).json()[0]["product_stock"] == 0
+
+
+def test_every_alert_endpoint_gives_the_category_and_brand(client, db):
+    product, _ = add_product_with_alert(db, alert_type="stock_low_coverage", level="critical")
+    product.marca = "Sancor"
+    db.commit()
+
+    for path in ("/alerts/", "/alerts/critical_alerts", "/alerts/stock_alerts"):
+        item = client.get(path, headers=AUTH).json()[0]
+        assert (item["product_category"], item["product_brand"]) == ("Lacteo", "Sancor")
+
+
 def test_critical_alerts_filters_by_level(client, db):
     add_product_with_alert(db, level="warning")
     _, critical = add_product_with_alert(db, level="critical")

@@ -1,6 +1,6 @@
 from datetime import date
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -176,9 +176,25 @@ class SalidaOCRRequest(BaseModel):
     comercio: Optional[str] = Field(
         default=None, description="Si el OCR lo leyó, queda en el motivo del movimiento."
     )
+    motivo: Literal["consumed", "expired", "sold", "rented"] = Field(
+        default="consumed", description="Tipo de salida con el que se registran todos los renglones."
+    )
 
 
 class SalidaOCRResult(BaseModel):
     procesados: int
     fallidos: int
     errores: list[str] = Field(default_factory=list)
+
+
+class EntradaOCRRequest(BaseModel):
+    """Ingreso de stock de varios productos ya cargados, leídos de un mismo comprobante."""
+
+    items: list[SalidaOCRItem] = Field(..., min_length=1)
+    comercio: Optional[str] = Field(
+        default=None, description="Si el OCR lo leyó, queda en el motivo del movimiento."
+    )
+
+
+class EntradaOCRResult(SalidaOCRResult):
+    pass
