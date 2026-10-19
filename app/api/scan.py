@@ -12,6 +12,8 @@ from app.core.security import get_current_user
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
 from app.schemas.ocr import (
+    EntradaOCRRequest,
+    EntradaOCRResult,
     SalidaOCRRequest,
     SalidaOCRResult,
     ScanDocType,
@@ -34,6 +36,9 @@ MAX_BYTES = 10 * 1024 * 1024
 # Motivo con el que queda asentada en el ledger una salida leída de un
 # comprobante. Es el mismo texto que usa el backoffice.
 MOTIVO_COMPROBANTE = "Documento Comercial"
+
+# Tope de stock de un producto (el mismo que valida el alta de productos).
+MAX_STOCK = 999999
 
 @router.post("", response_model=ScanState)
 async def create_scan(
@@ -162,7 +167,8 @@ async def salida_from_receipt(
     coincidencias, no con nombres: volver a emparejar acá sería decidir de nuevo
     algo que la persona ya decidió mirando la foto.
 
-    El movimiento queda como consumo, con el motivo `Documento Comercial`, y cada
+    El movimiento queda con el tipo de salida elegido (`motivo`, por defecto consumo) y la
+    nota `Documento Comercial`, y cada
     renglón se procesa por su cuenta: que a uno le falte stock no puede dejar el
     comprobante a medio aplicar sin que se sepa cuál falló.
 
@@ -198,7 +204,7 @@ async def salida_from_receipt(
             product_id=product.id,
             user_id=product.user_id,
             quantity=item.quantity,
-            event_type="consumed",
+            event_type=data.motivo,
             actor_email=actor_email,
             note=note,
         ))
@@ -224,7 +230,74 @@ async def salida_from_receipt(
     return SalidaOCRResult(procesados=processed, fallidos=len(errors), errores=errors)
 
 
-async def _check_alerts(discharged: list[Product], user_id: str, db: Session) -> None:
+@router.post("/entrada", response_model=EntradaOCRResult)
+async def entrada_from_receipt(
+    data: EntradaOCRRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Ingresa stock de varios productos ya cargados leídos de un mismo comprobante.
+
+    Es la contracara de `/salida`: llega con los `product_id` que el usuario ya
+    confirmó contra las coincidencias y solo suma stock (no crea productos), con
+    un movimiento de entrada por renglón. Cada renglón se procesa por su cuenta.
+    """
+    user_id = current_user["sub"]
+    actor_email = current_user.get("email")
+    note = f"{MOTIVO_COMPROBANTE} - {data.comercio}" if data.comercio else MOTIVO_COMPROBANTE
+
+    processed = 0
+    errors: list[str] = []
+    restocked: list[Product] = []
+
+    for item in data.items:
+        product = (
+            db.query(Product)
+            .filter(Product.id == item.product_id, Product.user_id == user_id)
+            .first()
+        )
+        if not product:
+            errors.append(f"Producto #{item.product_id}: no encontrado")
+            continue
+        if product.stock + item.quantity > MAX_STOCK:
+            errors.append(
+                f'Producto #{item.product_id}: "{product.nombre}" tiene {product.stock} '
+                f"unidades y no puede superar {MAX_STOCK}"
+            )
+            continue
+
+        product.stock += item.quantity
+        db.add(ConsumptionEvent(
+            product_id=product.id,
+            user_id=product.user_id,
+            quantity=item.quantity,
+            event_type="restocked",
+            actor_email=actor_email,
+            note=note,
+        ))
+        try:
+            db.commit()
+        except SQLAlchemyError as exc:
+            db.rollback()
+            errors.append(f"Producto #{item.product_id}: no se pudo registrar la entrada ({exc})")
+            continue
+        db.refresh(product)
+
+        products_api._log_activity(
+            db, "product_updated", actor_email, user_id, actor_email,
+            f'{actor_email or user_id} sumó {item.quantity} unidades a "{product.nombre}" '
+            f"({MOTIVO_COMPROBANTE}, stock: {product.stock}) desde la app",
+        )
+        processed += 1
+        restocked.append(product)
+
+    await _check_alerts(restocked, user_id, db, stock_increased=True)
+
+    return EntradaOCRResult(procesados=processed, fallidos=len(errors), errores=errors)
+
+
+async def _check_alerts(discharged: list[Product], user_id: str, db: Session, stock_increased: bool = False) -> None:
     """
     Evalúa las alertas de los productos que efectivamente bajaron de stock.
 
@@ -245,7 +318,7 @@ async def _check_alerts(discharged: list[Product], user_id: str, db: Session) ->
 
     for product in discharged:
         try:
-            await products_api._check_product_state(product, user, profile, db)
+            await products_api._check_product_state(product, user, profile, db, stock_increased=stock_increased)
         except Exception:
             logger.exception("No se pudieron evaluar las alertas del producto %s", product.id)
 

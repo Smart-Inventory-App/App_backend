@@ -414,3 +414,38 @@ def test_restock_notifies_when_the_new_stock_is_too_much(client, db, monkeypatch
     client.post(f"/products/{product.id}/restock", json={"quantity": 1}, headers=AUTH)
 
     assert sent == [10_000]
+
+
+# ── motivos de salida: vendido y alquilado ────────────────────────────────────
+
+@pytest.mark.parametrize("event_type", ["sold", "rented"])
+def test_a_sale_or_a_rental_lowers_the_stock_and_is_recorded_with_its_type(client, db, no_alerts, event_type):
+    product = add_product(db, stock=10)
+
+    resp = client.post(f"/products/{product.id}/events", json={"event_type": event_type, "quantity": 4}, headers=AUTH)
+
+    assert resp.status_code == 201
+    assert resp.json() == {"event_type": event_type, "quantity": 4, "remaining_stock": 6}
+    assert db.query(ConsumptionEvent).one().event_type == event_type
+
+
+def test_an_unknown_kind_of_exit_is_rejected(client, db, no_alerts):
+    product = add_product(db, stock=10)
+
+    resp = client.post(f"/products/{product.id}/events", json={"event_type": "stolen", "quantity": 1}, headers=AUTH)
+
+    assert resp.status_code == 422
+
+
+def test_a_movement_can_be_corrected_into_a_sale(client, db, no_alerts):
+    product = add_product(db, stock=10)
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 4}, headers=AUTH)
+    event = db.query(ConsumptionEvent).one()
+
+    resp = client.put(
+        f"/products/{product.id}/events/{event.id}",
+        json={"event_type": "sold", "quantity": 4},
+        headers=AUTH,
+    )
+
+    assert resp.status_code == 200

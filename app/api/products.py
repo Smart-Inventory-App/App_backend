@@ -36,7 +36,7 @@ _ML_CONCURRENCY = 8
 
 
 class EventRequest(BaseModel):
-    event_type: Literal["consumed", "expired"]
+    event_type: Literal["consumed", "expired", "sold", "rented"]
     quantity: int = Field(..., le=999999)
     note: Optional[str] = Field(None, max_length=50)
 
@@ -46,7 +46,7 @@ class RestockRequest(BaseModel):
 
 
 class EventCorrection(BaseModel):
-    event_type: Literal["consumed", "expired", "restocked"]
+    event_type: Literal["consumed", "expired", "sold", "rented", "restocked"]
     quantity: int = Field(..., le=999999)
     note: Optional[str] = Field(None, max_length=50)
 

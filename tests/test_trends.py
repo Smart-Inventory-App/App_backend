@@ -97,6 +97,19 @@ def test_restocks_count_as_entries_and_not_as_consumption(client, db):
     assert sum(d["quantity"] for d in body["consumo_por_dia"]) == 5
 
 
+@pytest.mark.parametrize("event_type", ["sold", "rented"])
+def test_sales_and_rentals_count_as_consumption(client, db, event_type):
+    leche = make_product(db)
+    add_event(db, leche, 3, today_utc(), event_type=event_type)
+    add_event(db, leche, 2, today_utc())
+
+    body = get_trends(client).json()
+
+    assert body["total_consumido"] == 5
+    assert body["total_entradas"] == 0
+    assert body["top_productos"][0]["quantity"] == 5
+
+
 def test_expired_events_are_in_neither_total(client, db):
     leche = make_product(db)
     add_event(db, leche, 4, today_utc(), event_type="expired")
