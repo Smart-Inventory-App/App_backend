@@ -307,7 +307,7 @@ App_backend/
 pytest tests/ -v
 ```
 
-**424 tests, 99 % de cobertura.** No necesitan PostgreSQL (se usa SQLite en memoria de archivo) ni ningún otro servicio: el módulo de OCR se dobla en tres niveles según lo que cada test pregunta —la traducción de una lectura a un borrador con diccionarios, el cliente HTTP contra un transporte de mentira de `httpx` (que sí ejercita el multipart, el reenvío del token y la traducción de errores) y los endpoints con el cliente doblado—.
+**450 tests, 99 % de cobertura.** No necesitan PostgreSQL (se usa SQLite en memoria de archivo) ni ningún otro servicio: el módulo de OCR se dobla en tres niveles según lo que cada test pregunta —la traducción de una lectura a un borrador con diccionarios, el cliente HTTP contra un transporte de mentira de `httpx` (que sí ejercita el multipart, el reenvío del token y la traducción de errores) y los endpoints con el cliente doblado—.
 
 ---
 
