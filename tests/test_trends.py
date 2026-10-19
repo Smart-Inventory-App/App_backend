@@ -107,7 +107,7 @@ def test_sales_and_rentals_count_as_consumption(client, db, event_type):
 
     assert body["total_consumido"] == 5
     assert body["total_entradas"] == 0
-    assert body["top_productos"][0]["quantity"] == 5
+    assert body["top_productos"][0]["cantidad"] == 5
 
 
 def test_expired_events_are_in_neither_total(client, db):

@@ -967,7 +967,10 @@ def test_only_the_users_own_changes_are_listed(client, db, no_alerts):
 
 
 def test_a_product_without_a_load_date_has_no_initial_entry(client, db, no_alerts):
-    leche = add_product(db, nombre="Leche", stock=3, created_at=None)
+    leche = add_product(db, nombre="Leche", stock=3)
+    # La base completa la fecha de carga sola al crear el producto: se la saca después, como en un producto viejo
+    db.query(Product).filter(Product.id == leche.id).update({"created_at": None})
+    db.commit()
     add_event(db, leche, 1, "consumed", at_time(3))
 
     assert summary(get_changes(client, limit=10)) == [("salida", 4, 3, "Leche")]
