@@ -46,9 +46,15 @@ async def close() -> None:
     """Cierra el pool. La llama el shutdown de la app."""
     global _client
 
-    if _client is not None:
-        await _client.aclose()
-        _client = None
+    client, _client = _client, None
+    if client is None:
+        return
+    try:
+        await client.aclose()
+    except RuntimeError:
+        # Si el pool tiene conexiones abiertas desde un event loop que ya se cerró, no queda nada que cerrar bien
+        # y el apagado de la app no tiene que fallar por eso.
+        pass
 
 
 def _base_url() -> str:

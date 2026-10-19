@@ -149,3 +149,15 @@ async def test_shutting_the_app_down_closes_the_client(monkeypatch):
         assert ml_client._client is not None
 
     assert ml_client._client is None
+
+
+async def test_closing_does_not_fail_when_the_connections_belong_to_a_loop_that_is_already_closed():
+    class BrokenClient:
+        async def aclose(self):
+            raise RuntimeError("Event loop is closed")
+
+    ml_client._client = BrokenClient()
+
+    await ml_client.close()
+
+    assert ml_client._client is None

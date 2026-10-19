@@ -105,3 +105,15 @@ async def test_a_non_json_error_response_falls_back_to_raw_text(ocr_transport, m
 
     assert exc.value.status_code == 500
     assert exc.value.detail == "Internal Server Error"
+
+
+async def test_close_does_not_fail_when_the_connections_belong_to_a_loop_that_is_already_closed():
+    class BrokenClient:
+        async def aclose(self):
+            raise RuntimeError("Event loop is closed")
+
+    ocr_client._client = BrokenClient()
+
+    await ocr_client.close()
+
+    assert ocr_client._client is None
