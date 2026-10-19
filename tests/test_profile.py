@@ -1,6 +1,8 @@
 """Endpoints de perfil: valores por defecto, edición y el token de notificaciones."""
 from uuid import UUID
 
+import pytest
+
 from app.models.user import AuthUser
 from tests.conftest import TEST_USER_ID
 
@@ -97,3 +99,61 @@ def test_unregister_notification_token_when_the_caller_has_no_auth_users_row(cli
 
     assert resp.status_code == 200
     assert resp.json()["message"] == "User not found"
+
+
+# ── límites del perfil ────────────────────────────────────────────────────────
+
+def put_profile(client, **fields):
+    payload = {"firstName": "Ana", "lastName": "Gomez", **fields}
+    return client.put("/profile/", json=payload, headers=AUTH)
+
+
+def test_the_name_the_last_name_and_the_username_accept_exactly_20_characters(client, db):
+    resp = put_profile(client, firstName="a" * 20, lastName="b" * 20, username="c" * 20)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert (body["firstName"], body["lastName"], body["username"]) == ("a" * 20, "b" * 20, "c" * 20)
+
+
+def test_a_name_longer_than_20_characters_is_rejected(client, db):
+    assert put_profile(client, firstName="a" * 21).status_code == 422
+
+
+def test_a_last_name_longer_than_20_characters_is_rejected(client, db):
+    assert put_profile(client, lastName="b" * 21).status_code == 422
+
+
+def test_a_username_longer_than_20_characters_is_rejected(client, db):
+    assert put_profile(client, username="c" * 21).status_code == 422
+
+
+def test_a_rejected_profile_keeps_what_was_saved_before(client, db):
+    put_profile(client, firstName="Ana", username="anag")
+
+    put_profile(client, firstName="x" * 30, username="y" * 30)
+
+    body = client.get("/profile/", headers=AUTH).json()
+    assert (body["firstName"], body["username"]) == ("Ana", "anag")
+
+
+@pytest.mark.parametrize("field", ["coverageDaysThreshold", "expiryDaysThreshold"])
+@pytest.mark.parametrize("days", [2, 7, 30, 90])
+def test_the_alert_days_accept_the_whole_range_from_2_to_90(client, db, field, days):
+    resp = put_profile(client, **{field: days})
+
+    assert resp.status_code == 200
+    assert resp.json()[field] == days
+
+
+@pytest.mark.parametrize("field", ["coverageDaysThreshold", "expiryDaysThreshold"])
+@pytest.mark.parametrize("days", [-1, 0, 1, 91, 365])
+def test_the_alert_days_outside_the_range_are_rejected(client, db, field, days):
+    assert put_profile(client, **{field: days}).status_code == 422
+
+
+def test_the_alert_check_hour_still_goes_from_0_to_23(client, db):
+    assert put_profile(client, alertCheckHour=0).json()["alertCheckHour"] == 0
+    assert put_profile(client, alertCheckHour=23).json()["alertCheckHour"] == 23
+    assert put_profile(client, alertCheckHour=24).status_code == 422
+    assert put_profile(client, alertCheckHour=-1).status_code == 422
