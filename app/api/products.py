@@ -22,6 +22,8 @@ from app.models.user import AuthUser
 from app.schemas.product import (
     ProductCreate,
     ProductDefaults,
+    ProductGroupDetail,
+    ProductGroupSummary,
     ProductResponse,
     ProductSuggestion,
     ProductUpdate,
@@ -395,6 +397,84 @@ def _to_suggestion(p: Product) -> ProductSuggestion:
         descripcion=p.descripcion,
         imagen_url=p.imagen_url,
         codigo_barras=p.codigo_barras,
+    )
+
+
+def _group_key(nombre: str, categoria: str) -> tuple[str, str]:
+    """Qué cuenta como "el mismo producto" para el stock total: igual nombre y categoría, sin distinguir
+    mayúsculas, tildes ni espacios sobrantes.
+
+    La marca no entra en la clave, ni nada de lo que cambia entre lotes (vencimiento, código de barras,
+    ubicación, imagen, stock).
+    """
+
+    def norm(text: Optional[str]) -> str:
+        return alphabetical_key(" ".join((text or "").split()))
+
+    return (norm(nombre), norm(categoria))
+
+
+def _user_groups(user_id: str, db: Session) -> dict[tuple[str, str], list[Product]]:
+    groups: dict[tuple[str, str], list[Product]] = {}
+    products = db.query(Product).filter(Product.user_id == user_id).order_by(Product.id.asc()).all()
+    for product in products:
+        groups.setdefault(_group_key(product.nombre, product.categoria), []).append(product)
+    return groups
+
+
+def _summarize_group(lots: list[Product]) -> ProductGroupSummary:
+    first = lots[0]
+    expiries = [p.vencimiento for p in lots if p.stock > 0 and p.vencimiento]
+    return ProductGroupSummary(
+        nombre=first.nombre,
+        categoria=first.categoria,
+        stock_total=sum(p.stock for p in lots),
+        lotes=len(lots),
+        proximo_vencimiento=min(expiries) if expiries else None,
+    )
+
+
+@router.get("/groups", response_model=list[ProductGroupSummary])
+async def search_product_groups(
+    q: str = Query(..., min_length=1),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Productos del usuario agrupados por nombre y categoría, cuyo nombre contiene `q`.
+
+    La búsqueda no distingue mayúsculas ni tildes. Cada grupo trae el stock sumado de todos sus lotes.
+    """
+    needle = alphabetical_key(" ".join(q.split()))
+    if not needle:
+        return []
+    groups = [
+        _summarize_group(lots)
+        for key, lots in _user_groups(current_user["sub"], db).items()
+        if needle in key[0]
+    ]
+    groups.sort(key=lambda g: (alphabetical_key(g.nombre), alphabetical_key(g.categoria)))
+    return groups[:10]
+
+
+@router.get("/group", response_model=ProductGroupDetail)
+async def get_product_group(
+    nombre: str = Query(..., min_length=1),
+    categoria: str = Query(..., min_length=1),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Todos los productos del usuario con ese nombre y categoría (de cualquier marca), y su stock total.
+
+    Salen ordenados por vencimiento (los que no vencen, al final).
+    """
+    lots = _user_groups(current_user["sub"], db).get(_group_key(nombre, categoria))
+    if not lots:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
+    summary = _summarize_group(lots)
+    ordered = sorted(lots, key=lambda p: (p.vencimiento is None, p.vencimiento or date.max, p.id))
+    return ProductGroupDetail(
+        **summary.model_dump(),
+        productos=[ProductResponse.model_validate(p, from_attributes=True) for p in ordered],
     )
 
 

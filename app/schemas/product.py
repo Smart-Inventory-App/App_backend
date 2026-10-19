@@ -100,3 +100,17 @@ class ReposicionSuggestion(BaseModel):
     daily_rate: float
     days_until_stockout: Optional[int] = None
     suggested_qty: int
+
+
+class ProductGroupSummary(BaseModel):
+    """Todos los productos con el mismo nombre y categoría (la marca puede variar), con su stock total."""
+
+    nombre: str
+    categoria: str
+    stock_total: int
+    lotes: int
+    proximo_vencimiento: Optional[date] = None
+
+
+class ProductGroupDetail(ProductGroupSummary):
+    productos: list[ProductResponse]
