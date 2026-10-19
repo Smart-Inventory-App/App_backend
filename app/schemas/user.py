@@ -66,12 +66,19 @@ class ProfileResponse(BaseModel):
     userType: UserType
 
 
+# Límites del perfil: el nombre, el apellido y el usuario llegan a 20 caracteres; los días de las alertas
+# van de 2 a 90. La app muestra los mismos números, así que se cambian en los dos lados a la vez.
+PROFILE_TEXT_MAX = 20
+ALERT_DAYS_MIN = 2
+ALERT_DAYS_MAX = 90
+
+
 class ProfileUpdate(BaseModel):
-    firstName: str
-    lastName: str
-    username: Optional[str] = None
-    coverageDaysThreshold: Optional[int] = Field(None, gt=0)
-    expiryDaysThreshold: Optional[int] = Field(None, gt=0)
+    firstName: str = Field(max_length=PROFILE_TEXT_MAX)
+    lastName: str = Field(max_length=PROFILE_TEXT_MAX)
+    username: Optional[str] = Field(None, max_length=PROFILE_TEXT_MAX)
+    coverageDaysThreshold: Optional[int] = Field(None, ge=ALERT_DAYS_MIN, le=ALERT_DAYS_MAX)
+    expiryDaysThreshold: Optional[int] = Field(None, ge=ALERT_DAYS_MIN, le=ALERT_DAYS_MAX)
     alertCheckHour: Optional[int] = Field(None, ge=0, le=23)
     userType: Optional[UserType] = None
 

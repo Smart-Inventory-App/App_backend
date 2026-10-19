@@ -143,6 +143,22 @@ Varios clientes escaneando simultáneamente no se bloquean entre sí: el worker 
 
 Cada alerta trae, además de su tipo, nivel y los datos del motivo (`days_until_stockout`, `units_wasted`), lo que la app necesita para mostrarla sin pedir el producto aparte: `product_name`, `image_url`, `product_stock` (un stock de `0` se devuelve como `0`, no como vacío), `product_expiry`, `product_category` y `product_brand`. La app los usa en la ventana «Detalle de Alerta» que se abre al tocar una entrada.
 
+### Perfil (requieren `Authorization: Bearer <token>`)
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | `/profile/` | Perfil del usuario (se crea con los valores por defecto si no existe) |
+| PUT | `/profile/` | Actualizar datos personales, tipo de cuenta y configuración de alertas |
+
+Límites que valida `PUT /profile/` (responde `422` si no se cumplen; son los mismos que aplica la app):
+
+| Campo | Límite |
+|-------|--------|
+| `firstName`, `lastName`, `username` | hasta 20 caracteres |
+| `coverageDaysThreshold` (días de stock) | entero de 2 a 90 |
+| `expiryDaysThreshold` (días por vencer) | entero de 2 a 90 |
+| `alertCheckHour` | entero de 0 a 23 (hora UTC) |
+
 ### Health
 
 | Método | Endpoint | Descripción |
