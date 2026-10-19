@@ -539,6 +539,100 @@ def test_sorting_by_other_fields_still_lists_the_products_without_an_expiry_date
     assert [p["nombre"] for p in resp.json()] == ["Sin fecha", "Con fecha"]
 
 
+# ── listado paginado ──────────────────────────────────────────────────────────
+
+def names(client, **params):
+    return [p["nombre"] for p in client.get("/products/", params=params, headers=AUTH).json()]
+
+
+def many_products(db, count=25):
+    for i in range(count):
+        add_product(db, nombre=f"Producto {i:02d}", categoria="Almacen" if i % 2 == 0 else "Lacteos", stock=i)
+
+
+def test_without_a_limit_the_list_has_every_product(client, db, no_alerts):
+    many_products(db)
+
+    assert len(names(client)) == 25
+
+
+def test_a_limit_gives_the_first_page(client, db, no_alerts):
+    many_products(db)
+
+    first = names(client, sort_by="nombre", limit=20)
+
+    assert first == [f"Producto {i:02d}" for i in range(20)]
+
+
+def test_an_offset_gives_the_following_pages_without_repeating_or_skipping(client, db, no_alerts):
+    many_products(db)
+
+    first = names(client, sort_by="nombre", limit=20)
+    second = names(client, sort_by="nombre", limit=10, offset=20)
+
+    assert second == [f"Producto {i:02d}" for i in range(20, 25)]
+    assert first + second == names(client, sort_by="nombre")
+
+
+@pytest.mark.parametrize("sort_by", [None, "stock", "categoria", "vencimiento", "nombre"])
+@pytest.mark.parametrize("sort_dir", ["asc", "desc"])
+def test_pages_add_up_to_the_whole_list_for_every_order(client, db, no_alerts, sort_by, sort_dir):
+    for i in range(23):
+        add_product(db, nombre=f"P{i:02d}", categoria="Igual", stock=i % 3, vencimiento=date(2027, 1, 1 + i % 5))
+    params = {"sort_dir": sort_dir, **({"sort_by": sort_by} if sort_by else {})}
+    everything = [p["id"] for p in client.get("/products/", params=params, headers=AUTH).json()]
+
+    pages = []
+    offset = 0
+    while True:
+        page = [p["id"] for p in client.get("/products/", params={**params, "limit": 10, "offset": offset}, headers=AUTH).json()]
+        if not page:
+            break
+        pages += page
+        offset += 10
+
+    assert pages == everything
+    assert len(set(pages)) == len(pages) == 23
+
+
+def test_the_pages_respect_the_filters_and_the_search(client, db, no_alerts):
+    many_products(db)
+
+    first = names(client, categoria="almacen", sort_by="nombre", limit=5)
+    rest = names(client, categoria="almacen", sort_by="nombre", limit=50, offset=5)
+
+    assert len(first) == 5 and all(int(n[-2:]) % 2 == 0 for n in first + rest)
+    assert len(first + rest) == 13
+    assert names(client, search="Producto 0", sort_by="nombre", limit=3) == ["Producto 00", "Producto 01", "Producto 02"]
+
+
+def test_an_offset_beyond_the_end_gives_an_empty_page(client, db, no_alerts):
+    many_products(db, count=3)
+
+    assert names(client, limit=10, offset=50) == []
+
+
+def test_the_limit_and_the_offset_are_validated(client, db, no_alerts):
+    assert client.get("/products/", params={"limit": 0}, headers=AUTH).status_code == 422
+    assert client.get("/products/", params={"limit": 201}, headers=AUTH).status_code == 422
+    assert client.get("/products/", params={"offset": -1}, headers=AUTH).status_code == 422
+
+
+def test_the_default_order_is_newest_first_and_stays_stable_between_pages(client, db, no_alerts):
+    many_products(db, count=6)
+
+    everything = names(client)
+    assert names(client, limit=4) + names(client, limit=4, offset=4) == everything
+    assert everything[0] == "Producto 05"
+
+
+def test_the_pages_only_have_the_users_own_products(client, db, no_alerts):
+    many_products(db, count=3)
+    add_product(db, nombre="Ajeno", user_id="00000000-0000-0000-0000-00000000dead")
+
+    assert "Ajeno" not in names(client, limit=50)
+
+
 # ── stock total de un mismo producto (mismo nombre y categoría) ───────────────
 
 def lots(db):

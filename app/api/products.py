@@ -333,9 +333,12 @@ async def list_products(
     ubicacion: Optional[str] = Query(None),
     sort_by: Optional[str] = Query(None, pattern="^(nombre|stock|vencimiento|categoria)$"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+    limit: Optional[int] = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Productos del usuario, con filtros y orden. Sin `limit` trae todos; con `limit` y `offset` trae una página."""
     user_id = current_user["sub"]
     query = db.query(Product).filter(Product.user_id == user_id)
     if search:
@@ -347,21 +350,28 @@ async def list_products(
         query = query.filter(Product.categoria.ilike(categoria))
     if ubicacion:
         query = query.filter(Product.ubicacion.ilike(ubicacion))
+    page_end = offset + limit if limit is not None else None
     if sort_by == "nombre":
         # Orden alfabético real, sin distinguir mayúsculas ni tildes (la base ordenaría las mayúsculas primero)
-        return sorted(
+        ordered = sorted(
             query.all(),
             key=lambda product: (alphabetical_key(product.nombre), product.nombre, product.id),
             reverse=sort_dir == "desc",
         )
+        return ordered[offset:page_end]
     if sort_by == "vencimiento":
         # Los productos sin fecha de vencimiento no entran en este orden, ni creciente ni decreciente
         query = query.filter(Product.vencimiento.isnot(None))
     if sort_by:
         column = SORTABLE_FIELDS[sort_by]
-        query = query.order_by(column.desc() if sort_dir == "desc" else column.asc())
+        # El id desempata: así una página siguiente nunca repite ni se saltea productos con el mismo valor
+        query = query.order_by(column.desc() if sort_dir == "desc" else column.asc(), Product.id.asc())
     else:
-        query = query.order_by(Product.created_at.desc())
+        query = query.order_by(Product.created_at.desc(), Product.id.desc())
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
     return query.all()
 
 
