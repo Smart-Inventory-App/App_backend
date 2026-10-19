@@ -17,3 +17,5 @@ class AlertResponse(BaseModel):
     product_name: Optional[str] = None
     product_stock: Optional[int] = None
     product_expiry: Optional[date] = None
+    product_category: Optional[str] = None
+    product_brand: Optional[str] = None

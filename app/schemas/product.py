@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from app.core import barcode
 
@@ -100,3 +100,29 @@ class ReposicionSuggestion(BaseModel):
     daily_rate: float
     days_until_stockout: Optional[int] = None
     suggested_qty: int
+
+
+class ProductGroupSummary(BaseModel):
+    """Todos los productos con el mismo nombre y categoría (la marca puede variar), con su stock total."""
+
+    nombre: str
+    categoria: str
+    stock_total: int
+    lotes: int
+    proximo_vencimiento: Optional[date] = None
+
+
+class ProductGroupDetail(ProductGroupSummary):
+    productos: list[ProductResponse]
+
+
+class StockChange(BaseModel):
+    """Un cambio del stock de un producto: una entrada, una salida o una modificación, con el stock antes y después."""
+
+    id: str
+    kind: Literal["entrada", "salida", "modificacion"]
+    stock_before: int
+    stock_after: int
+    quantity: int
+    occurred_at: datetime
+    producto: ProductResponse

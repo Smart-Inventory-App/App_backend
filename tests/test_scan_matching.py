@@ -250,6 +250,116 @@ def test_an_alert_failure_does_not_undo_the_discharge(client, db, monkeypatch):
     assert leche.stock == 7
 
 
+@pytest.mark.parametrize("motivo", ["sold", "rented", "expired", "consumed"])
+def test_salida_records_the_chosen_kind_of_exit(client, db, alerts, motivo):
+    leche = add_product(db, stock=10)
+
+    resp = client.post("/products/scan/salida", json={
+        "items": [{"product_id": leche.id, "quantity": 2}],
+        "motivo": motivo,
+    }, headers=AUTH)
+
+    assert resp.status_code == 200
+    assert db.query(ConsumptionEvent).one().event_type == motivo
+
+
+def test_salida_rejects_an_unknown_kind_of_exit(client, db, alerts):
+    leche = add_product(db, stock=10)
+
+    resp = client.post("/products/scan/salida", json={
+        "items": [{"product_id": leche.id, "quantity": 2}],
+        "motivo": "restocked",
+    }, headers=AUTH)
+
+    assert resp.status_code == 422
+
+
+# ── entrada por comprobante ───────────────────────────────────────────────────
+
+def test_entrada_adds_the_stock_and_records_the_entries(client, db, alerts):
+    leche = add_product(db, nombre="Leche entera", stock=10)
+    yogur = add_product(db, nombre="Yogur Ser", stock=4)
+
+    resp = client.post("/products/scan/entrada", json={
+        "items": [{"product_id": leche.id, "quantity": 5}, {"product_id": yogur.id, "quantity": 1}],
+        "comercio": "Dia",
+    }, headers=AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"procesados": 2, "fallidos": 0, "errores": []}
+    db.refresh(leche)
+    db.refresh(yogur)
+    assert (leche.stock, yogur.stock) == (15, 5)
+    events = db.query(ConsumptionEvent).all()
+    assert {e.event_type for e in events} == {"restocked"}
+    assert all(e.note == "Documento Comercial - Dia" for e in events)
+
+
+def test_entrada_without_a_shop_keeps_only_the_reason_in_the_note(client, db, alerts):
+    leche = add_product(db, stock=1)
+
+    client.post("/products/scan/entrada", json={"items": [{"product_id": leche.id, "quantity": 1}]}, headers=AUTH)
+
+    assert db.query(ConsumptionEvent).one().note == "Documento Comercial"
+
+
+def test_entrada_evaluates_the_alerts_as_a_stock_increase(client, db, monkeypatch):
+    calls = []
+
+    async def record(product, user, profile, db, stock_increased=False):
+        calls.append((product.id, stock_increased))
+
+    monkeypatch.setattr(products_api, "_check_product_state", record)
+    leche = add_product(db, stock=1)
+
+    client.post("/products/scan/entrada", json={"items": [{"product_id": leche.id, "quantity": 2}]}, headers=AUTH)
+
+    assert calls == [(leche.id, True)]
+
+
+def test_entrada_reports_a_missing_product_and_a_stock_beyond_the_limit_without_stopping(client, db, alerts):
+    full = add_product(db, nombre="Lleno", stock=999999)
+    ok = add_product(db, nombre="Bien", stock=1)
+    foreign = add_product(db, nombre="Ajeno", stock=5, user_id=OTRO_USUARIO)
+
+    body = client.post("/products/scan/entrada", json={
+        "items": [
+            {"product_id": full.id, "quantity": 1},
+            {"product_id": foreign.id, "quantity": 1},
+            {"product_id": ok.id, "quantity": 3},
+        ],
+    }, headers=AUTH).json()
+
+    assert (body["procesados"], body["fallidos"]) == (1, 2)
+    assert any("no puede superar" in e for e in body["errores"])
+    assert any("no encontrado" in e for e in body["errores"])
+    db.refresh(ok)
+    db.refresh(full)
+    db.refresh(foreign)
+    assert (ok.stock, full.stock, foreign.stock) == (4, 999999, 5)
+
+
+def test_an_alert_failure_does_not_undo_the_entrada(client, db, monkeypatch):
+    async def broken(*args, **kwargs):
+        raise RuntimeError("el servicio de notificaciones no responde")
+
+    monkeypatch.setattr(products_api, "_check_product_state", broken)
+    leche = add_product(db, stock=1)
+
+    resp = client.post("/products/scan/entrada", json={"items": [{"product_id": leche.id, "quantity": 2}]}, headers=AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json()["procesados"] == 1
+    db.refresh(leche)
+    assert leche.stock == 3
+
+
+def test_an_empty_entrada_is_rejected(client, db):
+    resp = client.post("/products/scan/entrada", json={"items": []}, headers=AUTH)
+
+    assert resp.status_code == 422
+
+
 def test_an_empty_receipt_is_rejected(client, db):
     resp = client.post("/products/scan/salida", json={"items": []}, headers=AUTH)
 

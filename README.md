@@ -20,19 +20,38 @@
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
-| GET | `/products/` | Listar productos del usuario |
+| GET | `/products/` | Listar productos del usuario (con filtros, orden y paginación) |
 | POST | `/products/` | Crear producto |
 | GET | `/products/{id}` | Obtener un producto |
 | PUT | `/products/{id}` | Actualizar producto |
 | DELETE | `/products/{id}` | Eliminar producto |
+| GET | `/products/changes` | Últimos cambios de stock (entradas, salidas y modificaciones), del más nuevo al más viejo |
+| GET | `/products/groups` | Buscar por nombre los productos agrupados (stock total de cada uno) |
+| GET | `/products/group` | Todos los productos con un mismo nombre y categoría, y su stock total |
 
-**Filtros en `GET /products/`:**
+**Filtros, orden y páginas en `GET /products/`:**
 
 | Query param | Descripción |
 |-------------|-------------|
 | `search` | Busca por nombre o marca (ilike) |
 | `categoria` | Filtra por categoría exacta (ilike) |
 | `ubicacion` | Filtra por ubicación (ilike) |
+| `sort_by` | `nombre`, `stock`, `vencimiento` o `categoria`. Sin este parámetro salen los más nuevos primero |
+| `sort_dir` | `asc` (default) o `desc` |
+| `limit` | Cuántos productos traer (1 a 200). **Sin `limit` trae todos** |
+| `offset` | Cuántos saltear, para pedir las páginas siguientes (default 0) |
+
+Cómo se ordena:
+
+- **Por nombre el orden es alfabético de verdad**: no distingue mayúsculas ni tildes y la «ñ» va después de la «n» (`utils/sorting.py`). La base de datos pondría todas las mayúsculas antes que las minúsculas.
+- **Por vencimiento no entran los productos sin fecha**, ni creciente ni decreciente.
+- **El id desempata siempre**, así dos páginas seguidas nunca repiten ni se saltean productos que tienen el mismo valor en el campo ordenado.
+
+La app muestra el inventario de a páginas: los primeros 20 productos con los filtros elegidos y, con «Cargar más», 10 más cada vez (`limit=20&offset=0`, después `limit=10&offset=20`, y así).
+
+**Stock total de un producto (`/products/groups` y `/products/group`).** «El mismo producto» es el que tiene igual nombre y categoría, sin distinguir mayúsculas, tildes ni espacios sobrantes; la marca no entra en la clave, ni nada de lo que cambia entre lotes (vencimiento, código de barras, ubicación, imagen). `/products/groups?q=` devuelve hasta 10 grupos cuyo nombre contiene `q`, cada uno con `stock_total`, `lotes` y `proximo_vencimiento`; `/products/group?nombre=&categoria=` devuelve el detalle con todos sus productos ordenados por vencimiento (los que no vencen, al final) y `404` si no existe.
+
+**Últimos cambios (`/products/changes`).** Parámetros `limit` (1 a 50, default 5) y `offset`. Cada cambio trae el stock antes y después, que se reconstruye hacia atrás desde el stock actual con los movimientos del producto; las correcciones no aparecen, queda el movimiento corregido. Un producto con fecha de carga aporta además su entrada inicial.
 
 ### Schema de producto
 
@@ -111,6 +130,18 @@ Consultar cada **medio segundo** alcanza: un código de barras o un sello se res
 Del lado de este backend, las llamadas al coordinador van por un **pool de conexiones compartido** en vez de abrir una por request como el resto del backend. Es deliberado: con el polling, un solo producto son decenas de conexiones nuevas, y con varios clientes a la vez son cientos por minuto.
 
 Varios clientes escaneando simultáneamente no se bloquean entre sí: el worker del OCR procesa varios jobs a la vez, así que un código de barras enviado detrás de tres tickets se resuelve igual en segundos. El detalle está en el README de `ocr_service`.
+
+### Alertas (requieren `Authorization: Bearer <token>`)
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | `/alerts/` | Todas las alertas del usuario |
+| GET | `/alerts/critical_alerts` | Solo las críticas |
+| GET | `/alerts/stock_alerts` | Solo las de stock bajo (`stock_low_coverage`) |
+| GET | `/alerts/expiry_alerts` | Las de vencimiento y de ritmo lento (`expiry`, `slow_pace`) |
+| GET | `/alerts/summary` | Cantidad de alertas por nivel: `critical`, `warning`, `info` |
+
+Cada alerta trae, además de su tipo, nivel y los datos del motivo (`days_until_stockout`, `units_wasted`), lo que la app necesita para mostrarla sin pedir el producto aparte: `product_name`, `image_url`, `product_stock` (un stock de `0` se devuelve como `0`, no como vacío), `product_expiry`, `product_category` y `product_brand`. La app los usa en la ventana «Detalle de Alerta» que se abre al tocar una entrada.
 
 ### Health
 
@@ -229,7 +260,8 @@ docker-compose exec db psql -U user -d tpp_db
 App_backend/
 ├── app/
 │   ├── api/
-│   │   ├── products.py     # CRUD de productos
+│   │   ├── products.py     # CRUD de productos, cambios de stock y stock total por producto
+│   │   ├── alerts.py       # Alertas del usuario (con los datos del producto)
 │   │   └── health.py       # Health check
 │   ├── core/
 │   │   ├── config.py       # Settings (pydantic-settings)
@@ -237,8 +269,11 @@ App_backend/
 │   │   └── security.py     # Validación JWT local
 │   ├── models/
 │   │   └── product.py      # Modelo Product (user_id, nombre, stock, ...)
-│   └── schemas/
-│       └── product.py      # ProductCreate / ProductUpdate / ProductResponse
+│   ├── schemas/
+│   │   ├── product.py      # ProductCreate / ProductUpdate / ProductResponse / grupos y cambios
+│   │   └── alert.py        # AlertResponse
+│   └── utils/
+│       └── sorting.py      # Orden alfabético sin mayúsculas ni tildes
 ├── alembic/                # Migraciones
 ├── tests/
 ├── docker-compose.yml
@@ -254,7 +289,7 @@ App_backend/
 pytest tests/ -v
 ```
 
-**77 tests.** No necesitan PostgreSQL (se usa SQLite en memoria de archivo) ni ningún otro servicio: el módulo de OCR se dobla en tres niveles según lo que cada test pregunta —la traducción de una lectura a un borrador con diccionarios, el cliente HTTP contra un transporte de mentira de `httpx` (que sí ejercita el multipart, el reenvío del token y la traducción de errores) y los endpoints con el cliente doblado—.
+**424 tests, 99 % de cobertura.** No necesitan PostgreSQL (se usa SQLite en memoria de archivo) ni ningún otro servicio: el módulo de OCR se dobla en tres niveles según lo que cada test pregunta —la traducción de una lectura a un borrador con diccionarios, el cliente HTTP contra un transporte de mentira de `httpx` (que sí ejercita el multipart, el reenvío del token y la traducción de errores) y los endpoints con el cliente doblado—.
 
 ---
 
