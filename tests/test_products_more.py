@@ -449,3 +449,91 @@ def test_a_movement_can_be_corrected_into_a_sale(client, db, no_alerts):
     )
 
     assert resp.status_code == 200
+
+
+# ── listado: orden alfabético y por vencimiento ───────────────────────────────
+
+NAMES = ["bruno", "Ana", "carlos", "Álvaro", "ñandú", "Nube", "oso", "Zeta"]
+ALPHABETICAL = ["Álvaro", "Ana", "bruno", "carlos", "Nube", "ñandú", "oso", "Zeta"]
+
+
+def names_sorted(client, direction):
+    resp = client.get("/products/", params={"sort_by": "nombre", "sort_dir": direction}, headers=AUTH)
+    return [p["nombre"] for p in resp.json()]
+
+
+def test_sort_by_nombre_ascending_is_alphabetical_ignoring_case_and_accents(client, db, no_alerts):
+    for name in NAMES:
+        add_product(db, nombre=name)
+
+    assert names_sorted(client, "asc") == ALPHABETICAL
+
+
+def test_sort_by_nombre_descending_is_the_exact_reverse(client, db, no_alerts):
+    for name in NAMES:
+        add_product(db, nombre=name)
+
+    assert names_sorted(client, "desc") == list(reversed(ALPHABETICAL))
+
+
+def test_sort_by_nombre_does_not_put_every_capital_letter_first(client, db, no_alerts):
+    for name in ["banana", "Cereal", "arroz", "Dulce"]:
+        add_product(db, nombre=name)
+
+    assert names_sorted(client, "asc") == ["arroz", "banana", "Cereal", "Dulce"]
+
+
+def test_sort_by_nombre_is_stable_for_names_that_differ_only_in_case(client, db, no_alerts):
+    first = add_product(db, nombre="leche")
+    second = add_product(db, nombre="Leche")
+
+    asc = [p["id"] for p in client.get("/products/", params={"sort_by": "nombre"}, headers=AUTH).json()]
+
+    assert asc == [second.id, first.id]
+
+
+def test_sort_by_nombre_keeps_the_search_and_category_filters(client, db, no_alerts):
+    add_product(db, nombre="Leche", categoria="Lacteos")
+    add_product(db, nombre="Yogur", categoria="Lacteos")
+    add_product(db, nombre="Arroz", categoria="Almacen")
+
+    resp = client.get("/products/", params={"sort_by": "nombre", "categoria": "lacteos"}, headers=AUTH)
+
+    assert [p["nombre"] for p in resp.json()] == ["Leche", "Yogur"]
+
+
+def test_sort_by_nombre_only_lists_the_users_own_products(client, db, no_alerts):
+    add_product(db, nombre="Mio")
+    add_product(db, nombre="Ajeno", user_id="00000000-0000-0000-0000-00000000dead")
+
+    assert names_sorted(client, "asc") == ["Mio"]
+
+
+@pytest.mark.parametrize("direction, expected", [("asc", ["Viejo", "Medio", "Nuevo"]), ("desc", ["Nuevo", "Medio", "Viejo"])])
+def test_sort_by_vencimiento_hides_products_without_an_expiry_date(client, db, no_alerts, direction, expected):
+    add_product(db, nombre="Medio", vencimiento=date(2027, 6, 1))
+    add_product(db, nombre="Sin fecha", vencimiento=None)
+    add_product(db, nombre="Nuevo", vencimiento=date(2028, 1, 1))
+    add_product(db, nombre="Viejo", vencimiento=date(2026, 12, 1))
+
+    resp = client.get("/products/", params={"sort_by": "vencimiento", "sort_dir": direction}, headers=AUTH)
+
+    assert [p["nombre"] for p in resp.json()] == expected
+
+
+def test_without_a_sort_the_products_without_an_expiry_date_are_still_listed(client, db, no_alerts):
+    add_product(db, nombre="Con fecha", vencimiento=date(2027, 6, 1))
+    add_product(db, nombre="Sin fecha", vencimiento=None)
+
+    resp = client.get("/products/", headers=AUTH)
+
+    assert {p["nombre"] for p in resp.json()} == {"Con fecha", "Sin fecha"}
+
+
+def test_sorting_by_other_fields_still_lists_the_products_without_an_expiry_date(client, db, no_alerts):
+    add_product(db, nombre="Con fecha", vencimiento=date(2027, 6, 1), stock=1)
+    add_product(db, nombre="Sin fecha", vencimiento=None, stock=2)
+
+    resp = client.get("/products/", params={"sort_by": "stock", "sort_dir": "desc"}, headers=AUTH)
+
+    assert [p["nombre"] for p in resp.json()] == ["Sin fecha", "Con fecha"]

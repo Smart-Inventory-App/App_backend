@@ -28,6 +28,7 @@ from app.schemas.product import (
     ReposicionSuggestion,
 )
 from app.services import ml_client
+from app.utils.sorting import alphabetical_key
 from app.services.notifications import NotificationService
 
 logger = logging.getLogger(__name__)
@@ -339,6 +340,16 @@ async def list_products(
         query = query.filter(Product.categoria.ilike(categoria))
     if ubicacion:
         query = query.filter(Product.ubicacion.ilike(ubicacion))
+    if sort_by == "nombre":
+        # Orden alfabético real, sin distinguir mayúsculas ni tildes (la base ordenaría las mayúsculas primero)
+        return sorted(
+            query.all(),
+            key=lambda product: (alphabetical_key(product.nombre), product.nombre, product.id),
+            reverse=sort_dir == "desc",
+        )
+    if sort_by == "vencimiento":
+        # Los productos sin fecha de vencimiento no entran en este orden, ni creciente ni decreciente
+        query = query.filter(Product.vencimiento.isnot(None))
     if sort_by:
         column = SORTABLE_FIELDS[sort_by]
         query = query.order_by(column.desc() if sort_dir == "desc" else column.asc())
