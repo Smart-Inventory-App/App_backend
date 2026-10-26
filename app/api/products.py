@@ -176,7 +176,8 @@ async def _notificate_low_coverage(token: str, product: Product, days: int, user
         token,
         "Stock por agotarse",
         f"{product.nombre} se agotará en aproximadamente {days} {label}.",
-        user_email
+        user_email,
+        kind="low_coverage", product_name=product.nombre, days=days,
     )
 
 async def _notificate_overstock(token: str, product: Product, days: int, user_email: str):
@@ -184,7 +185,8 @@ async def _notificate_overstock(token: str, product: Product, days: int, user_em
         token,
         "Compraste más de lo necesario",
         f"Tenés {product.nombre} para aproximadamente {days} días. Quizás compraste de más.",
-        user_email
+        user_email,
+        kind="overstock", product_name=product.nombre, days=days,
     )
 
 async def _notificate_understock(token: str, product: Product, days: int, user_email: str):
@@ -192,7 +194,8 @@ async def _notificate_understock(token: str, product: Product, days: int, user_e
         token,
         "Compraste menos de lo necesario",
         f"Aun con la compra, {product.nombre} te alcanza solo para {days} días. Considerá comprar más.",
-        user_email
+        user_email,
+        kind="understock", product_name=product.nombre, days=days,
     )
 
 async def _notificate_slow_pace(token: str, product: Product, days_until_expiry: int, units_wasted: int, user_email: str):
@@ -200,7 +203,8 @@ async def _notificate_slow_pace(token: str, product: Product, days_until_expiry:
         token,
         "Riesgo de vencimiento por bajo consumo",
         f"Al ritmo actual, {units_wasted} unidad{'es' if units_wasted != 1 else ''} de {product.nombre} vencer{'án' if units_wasted != 1 else 'á'} en {days_until_expiry} días.",
-        user_email
+        user_email,
+        kind="slow_pace", product_name=product.nombre, days=days_until_expiry, units=units_wasted,
     )
 
 async def _notificate_expirancy(token: str, product: Product, expirancy_days: int, user_email: str):
@@ -208,7 +212,8 @@ async def _notificate_expirancy(token: str, product: Product, expirancy_days: in
         token,
         "Producto próximo a vencerse",
         f"El producto {product.nombre} vence en {expirancy_days} días.",
-        user_email
+        user_email,
+        kind="expiry", product_name=product.nombre, days=expirancy_days,
     )
 
 async def _check_product_state(

@@ -104,6 +104,10 @@ async def test_a_product_close_to_expiry_gets_an_alert_and_a_notification(db, us
     assert alert is not None
     assert alert.level == "warning"
     assert notifications[0]["title"] == "Producto próximo a vencerse"
+    # el mail explica el aviso: tipo, producto y días
+    assert notifications[0]["kind"] == "expiry"
+    assert notifications[0]["product_name"] == product.nombre
+    assert isinstance(notifications[0]["days"], int)
 
 
 async def test_a_product_expiring_tomorrow_gets_a_critical_alert(db, use_test_db, notifications):

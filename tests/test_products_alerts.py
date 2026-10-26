@@ -34,6 +34,8 @@ def test_update_close_to_expiry_creates_a_warning_alert(client, db, notification
     assert alert is not None
     assert alert.level == "warning"
     assert notifications[0]["title"] == "Producto próximo a vencerse"
+    assert notifications[0]["kind"] == "expiry"
+    assert notifications[0]["product_name"]
 
 
 def test_a_second_update_upgrades_the_alert_to_critical(client, db, notifications):
@@ -71,7 +73,7 @@ def test_low_coverage_alert_is_created_from_the_ml_prediction(client, db, notifi
     alert = db.query(Alert).filter(Alert.product_id == product["id"], Alert.type == "stock_low_coverage").first()
     assert alert is not None
     assert alert.level == "warning"
-    assert any(n["title"] == "Stock por agotarse" for n in notifications)
+    assert any(n["title"] == "Stock por agotarse" and n["kind"] == "low_coverage" for n in notifications)
 
 
 def test_low_coverage_alert_is_critical_when_the_stockout_is_imminent(client, db, notifications, ml_enabled, ml_transport):
@@ -103,7 +105,10 @@ def test_slow_pace_alert_is_created_when_consumption_wont_catch_the_expiry(clien
 
     alert = db.query(Alert).filter(Alert.product_id == product["id"], Alert.type == "slow_pace").first()
     assert alert is not None
-    assert any(n["title"] == "Riesgo de vencimiento por bajo consumo" for n in notifications)
+    assert any(
+        n["title"] == "Riesgo de vencimiento por bajo consumo" and n["kind"] == "slow_pace" and n["units"] >= 1
+        for n in notifications
+    )
 
 
 # ── ML: overstock / understock tras un alta que fusiona o una edición ────────
@@ -125,7 +130,7 @@ def test_merging_when_the_lot_wont_last_warns_understock(client, db, notificatio
     resp = client.post("/products/", json={"nombre": "Jabon", "categoria": "General", "stock": 5}, headers=AUTH)
 
     assert resp.json()["merged"] is True
-    assert any(n["title"] == "Compraste menos de lo necesario" for n in notifications)
+    assert any(n["title"] == "Compraste menos de lo necesario" and n["kind"] == "understock" for n in notifications)
 
 
 def test_a_direct_restock_can_also_warn_overstock(client, db, notifications, ml_enabled, ml_transport):

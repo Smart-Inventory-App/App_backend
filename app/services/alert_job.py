@@ -113,7 +113,8 @@ async def run_daily_coverage_check(
                             user.firebase_token,
                             "Producto próximo a vencerse",
                             f"{product.nombre} vence en {days_to_expiry} días.",
-                            user.email
+                            user.email,
+                            kind="expiry", product_name=product.nombre, days=days_to_expiry,
                         )
                         alerts_sent += 1
 
@@ -147,7 +148,8 @@ async def run_daily_coverage_check(
                             user.firebase_token,
                             "Stock por agotarse",
                             f"{product.nombre} se agotará en aproximadamente {days_until_stockout} {label}.",
-                            user.email
+                            user.email,
+                            kind="low_coverage", product_name=product.nombre, days=days_until_stockout,
                         )
                         alerts_sent += 1
 
@@ -170,7 +172,8 @@ async def run_daily_coverage_check(
                                     user.firebase_token,
                                     "Riesgo de vencimiento por bajo consumo",
                                     f"Al ritmo actual, {units_wasted} unidad{'es' if units_wasted != 1 else ''} de {product.nombre} vencer{'án' if units_wasted != 1 else 'á'} en {days_until_expiry} días.",
-                                    user.email
+                                    user.email,
+                                    kind="slow_pace", product_name=product.nombre, days=days_until_expiry, units=units_wasted,
                                 )
                                 alerts_sent += 1
                     if not slow_pace_risk:
