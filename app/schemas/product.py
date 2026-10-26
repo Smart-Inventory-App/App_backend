@@ -107,18 +107,11 @@ class ReposicionSuggestion(BaseModel):
     suggested_qty: int
 
 
-class ProductGroupSummary(BaseModel):
-    """Todos los productos con el mismo nombre y categoría (la marca puede variar), con su stock total."""
+class StockTotalResponse(BaseModel):
+    """Stock sumado de los productos que cumplen unos filtros, y cuántos son."""
 
-    nombre: str
-    categoria: str
     stock_total: int
-    lotes: int
-    proximo_vencimiento: Optional[date] = None
-
-
-class ProductGroupDetail(ProductGroupSummary):
-    productos: list[ProductResponse]
+    products: int
 
 
 class StockChange(BaseModel):

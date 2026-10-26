@@ -633,159 +633,77 @@ def test_the_pages_only_have_the_users_own_products(client, db, no_alerts):
     assert "Ajeno" not in names(client, limit=50)
 
 
-# ── stock total de un mismo producto (mismo nombre y categoría) ───────────────
+# ── stock total del inventario (con los mismos filtros que la lista) ───────────
 
-def lots(db):
-    """Tres lotes de la misma leche, una leche de otra marca (que también cuenta) y productos que no son lo mismo."""
-    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=4, vencimiento=date(2027, 3, 1), ubicacion="Heladera")
-    add_product(db, nombre="leche", marca="SER", categoria="lacteos", stock=6, vencimiento=date(2027, 1, 1), ubicacion="Freezer")
-    add_product(db, nombre="  Leche ", marca="Ser", categoria="Lacteos", stock=2, vencimiento=None, codigo_barras=None)
-    add_product(db, nombre="Leche", marca="Otra", categoria="Lacteos", stock=50)
-    add_product(db, nombre="Leche", marca="Ser", categoria="Almacen", stock=70)
-    add_product(db, nombre="Leche entera", marca="Ser", categoria="Lacteos", stock=90)
+def stock_total(client, **params):
+    return client.get("/products/stock-total", params=params, headers=AUTH)
 
 
-def get_group(client, **params):
-    return client.get("/products/group", params=params, headers=AUTH)
+def inventory(db):
+    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=4, ubicacion="Heladera")
+    add_product(db, nombre="Yogur", marca="Leches del Sur", categoria="Lacteos", stock=6, ubicacion="Freezer")
+    add_product(db, nombre="Arroz", marca="Gallo", categoria="Almacen", stock=10, ubicacion="Alacena")
+    add_product(db, nombre="Fideos", marca="Matarazzo", categoria="Almacen", stock=20, ubicacion=None)
 
 
-def test_a_group_adds_up_the_stock_of_every_product_with_the_same_name_and_category(client, db, no_alerts):
-    lots(db)
-
-    body = get_group(client, nombre="Leche", categoria="Lacteos").json()
-
-    assert body["stock_total"] == 62
-    assert body["lotes"] == 4
-    assert len(body["productos"]) == 4
+def test_the_stock_total_adds_up_every_product_of_the_user(client, db, no_alerts):
+    inventory(db)
+    assert stock_total(client).json() == {"stock_total": 40, "products": 4}
 
 
-def test_the_brand_does_not_split_a_group(client, db, no_alerts):
-    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=1)
-    add_product(db, nombre="Leche", marca="Otra", categoria="Lacteos", stock=2)
-    add_product(db, nombre="Leche", marca=None, categoria="Lacteos", stock=4)
-
-    body = get_group(client, nombre="Leche", categoria="Lacteos").json()
-
-    assert body["stock_total"] == 7
-    assert {p["marca"] for p in body["productos"]} == {"Ser", "Otra", None}
-    assert "marca" not in body
+def test_the_stock_total_of_an_empty_inventory_is_zero(client, db, no_alerts):
+    assert stock_total(client).json() == {"stock_total": 0, "products": 0}
 
 
-def test_a_different_category_is_a_different_group(client, db, no_alerts):
-    lots(db)
-
-    assert get_group(client, nombre="Leche", categoria="Almacen").json()["stock_total"] == 70
-
-
-def test_the_group_ignores_case_accents_and_extra_spaces(client, db, no_alerts):
-    add_product(db, nombre="Café", marca="Marca", categoria="Almacén", stock=2)
-    add_product(db, nombre="cafe ", marca="otra", categoria="almacen", stock=3)
-
-    body = get_group(client, nombre="CAFÉ", categoria="Almacen").json()
-
-    assert body["stock_total"] == 5
+def test_the_stock_total_searches_by_name_or_brand_like_the_list(client, db, no_alerts):
+    inventory(db)
+    # «lech» está en el nombre de la leche y en la marca del yogur
+    assert stock_total(client, search="lech").json() == {"stock_total": 10, "products": 2}
+    assert stock_total(client, search="Gallo").json() == {"stock_total": 10, "products": 1}
+    assert stock_total(client, search="zzz").json() == {"stock_total": 0, "products": 0}
 
 
-def test_the_products_come_ordered_by_expiry_with_the_ones_that_do_not_expire_last(client, db, no_alerts):
-    lots(db)
-
-    body = get_group(client, nombre="Leche", categoria="Lacteos").json()
-
-    assert [p["vencimiento"] for p in body["productos"]][:3] == ["2027-01-01", "2027-03-01", None]
-    assert body["productos"][3]["vencimiento"] is None
-
-
-def test_the_group_reports_the_nearest_expiry_of_the_products_that_still_have_stock(client, db, no_alerts):
-    add_product(db, nombre="Yogur", marca="Ser", categoria="Lacteos", stock=0, vencimiento=date(2026, 1, 1))
-    add_product(db, nombre="Yogur", marca="Ser", categoria="Lacteos", stock=3, vencimiento=date(2027, 5, 1))
-
-    body = get_group(client, nombre="Yogur", categoria="Lacteos").json()
-
-    assert body["proximo_vencimiento"] == "2027-05-01"
-    assert body["stock_total"] == 3
-    assert body["lotes"] == 2
+def test_the_stock_total_filters_by_category_and_location(client, db, no_alerts):
+    inventory(db)
+    assert stock_total(client, categoria="Almacen").json() == {"stock_total": 30, "products": 2}
+    assert stock_total(client, ubicacion="Freezer").json() == {"stock_total": 6, "products": 1}
+    assert stock_total(client, categoria="lacteos", ubicacion="heladera").json() == {"stock_total": 4, "products": 1}
+    assert stock_total(client, categoria="Almacen", ubicacion="Freezer").json() == {"stock_total": 0, "products": 0}
 
 
-def test_an_unknown_group_is_a_404(client, db, no_alerts):
-    lots(db)
-
-    assert get_group(client, nombre="Pan", categoria="Lacteos").status_code == 404
-
-
-def test_the_group_never_includes_other_users_products(client, db, no_alerts):
-    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=1)
-    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=100, user_id="00000000-0000-0000-0000-00000000dead")
-
-    body = get_group(client, nombre="Leche", categoria="Lacteos").json()
-
-    assert body["stock_total"] == 1
+def test_the_stock_total_matches_exactly_what_the_list_returns_with_the_same_filters(client, db, no_alerts):
+    inventory(db)
+    for filters in ({}, {"search": "lech"}, {"categoria": "Almacen"}, {"search": "a", "ubicacion": "Alacena"}):
+        listed = client.get("/products/", params=filters, headers=AUTH).json()
+        total = stock_total(client, **filters).json()
+        assert total == {"stock_total": sum(p["stock"] for p in listed), "products": len(listed)}
 
 
-def test_the_group_requires_a_name_and_a_category(client, db, no_alerts):
-    assert client.get("/products/group", params={"categoria": "Lacteos"}, headers=AUTH).status_code == 422
-    assert client.get("/products/group", params={"nombre": "Leche"}, headers=AUTH).status_code == 422
+def test_the_stock_total_counts_all_the_products_not_only_a_page(client, db, no_alerts):
+    for index in range(25):
+        add_product(db, nombre=f"Item {index}", categoria="General", stock=2)
+    page = client.get("/products/", params={"limit": 20}, headers=AUTH).json()
+    assert len(page) == 20
+    assert stock_total(client).json() == {"stock_total": 50, "products": 25}
 
 
-def test_group_suggestions_list_each_name_and_category_once_with_its_total(client, db, no_alerts):
-    lots(db)
-
-    resp = client.get("/products/groups", params={"q": "lec"}, headers=AUTH)
-
-    summary = {(g["nombre"], g["categoria"]): g["stock_total"] for g in resp.json()}
-    assert summary[("Leche", "Lacteos")] == 62
-    assert summary[("Leche", "Almacen")] == 70
-    assert summary[("Leche entera", "Lacteos")] == 90
-    assert len(summary) == 3
-    assert all("marca" not in g for g in resp.json())
+def test_the_stock_total_never_includes_other_users_products(client, db, no_alerts):
+    add_product(db, nombre="Mio", categoria="C", stock=3)
+    add_product(db, nombre="Ajeno", categoria="C", stock=99, user_id="00000000-0000-0000-0000-00000000dead")
+    assert stock_total(client).json() == {"stock_total": 3, "products": 1}
 
 
-def test_group_suggestions_ignore_case_and_accents_when_searching(client, db, no_alerts):
-    add_product(db, nombre="Café molido", marca="Marca", categoria="Almacen", stock=2)
-
-    assert [g["nombre"] for g in client.get("/products/groups", params={"q": "CAFE"}, headers=AUTH).json()] == ["Café molido"]
-    assert [g["nombre"] for g in client.get("/products/groups", params={"q": "molido"}, headers=AUTH).json()] == ["Café molido"]
-
-
-def test_the_search_does_not_look_at_the_brand(client, db, no_alerts):
-    add_product(db, nombre="Galletitas", marca="Terrabusi", categoria="Almacen", stock=2)
-
-    assert client.get("/products/groups", params={"q": "terrabusi"}, headers=AUTH).json() == []
+def test_the_stock_total_reflects_the_changes_of_the_inventory(client, db, no_alerts):
+    inventory(db)
+    created = client.post("/products/", json={"nombre": "Nuevo", "categoria": "Almacen", "stock": 5}, headers=AUTH).json()
+    assert stock_total(client).json() == {"stock_total": 45, "products": 5}
+    client.delete(f"/products/{created['id']}", headers=AUTH)
+    assert stock_total(client).json() == {"stock_total": 40, "products": 4}
 
 
-def test_group_suggestions_are_alphabetical_and_limited_to_ten(client, db, no_alerts):
-    for i in range(12):
-        add_product(db, nombre=f"Item {i:02d}", marca="M", categoria="C", stock=1)
-
-    names = [g["nombre"] for g in client.get("/products/groups", params={"q": "item"}, headers=AUTH).json()]
-
-    assert names == [f"Item {i:02d}" for i in range(10)]
-
-
-def test_group_suggestions_sum_every_product_even_when_only_some_match_the_search_text(client, db, no_alerts):
-    add_product(db, nombre="Léche", marca="Ser", categoria="Lacteos", stock=1)
-    add_product(db, nombre="Leche", marca="Otra", categoria="Lacteos", stock=2)
-
-    body = client.get("/products/groups", params={"q": "léche"}, headers=AUTH).json()
-
-    assert len(body) == 1
-    assert body[0]["stock_total"] == 3
-
-
-def test_group_suggestions_find_nothing_for_an_unknown_name_or_a_blank_search(client, db, no_alerts):
-    lots(db)
-
-    assert client.get("/products/groups", params={"q": "zzz"}, headers=AUTH).json() == []
-    assert client.get("/products/groups", params={"q": "   "}, headers=AUTH).json() == []
-
-
-def test_group_suggestions_only_include_the_users_products(client, db, no_alerts):
-    add_product(db, nombre="Ajeno", marca="M", categoria="C", user_id="00000000-0000-0000-0000-00000000dead")
-
-    assert client.get("/products/groups", params={"q": "ajeno"}, headers=AUTH).json() == []
-
-
-def test_group_suggestions_require_a_search_text(client, db, no_alerts):
-    assert client.get("/products/groups", headers=AUTH).status_code == 422
+def test_the_old_group_endpoints_are_gone(client, db, no_alerts):
+    assert client.get("/products/groups", params={"q": "lec"}, headers=AUTH).status_code in (404, 405, 422)
+    assert client.get("/products/group", params={"nombre": "Leche", "categoria": "Lacteos"}, headers=AUTH).status_code in (404, 405, 422)
 
 
 # ── últimos cambios de stock ──────────────────────────────────────────────────

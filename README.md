@@ -26,8 +26,7 @@
 | PUT | `/products/{id}` | Actualizar producto |
 | DELETE | `/products/{id}` | Eliminar producto |
 | GET | `/products/changes` | Últimos cambios de stock (entradas, salidas y modificaciones), del más nuevo al más viejo |
-| GET | `/products/groups` | Buscar por nombre los productos agrupados (stock total de cada uno) |
-| GET | `/products/group` | Todos los productos con un mismo nombre y categoría, y su stock total |
+| GET | `/products/stock-total` | Suma del stock y cantidad de productos que cumplen los mismos filtros que `GET /products/` |
 
 **Filtros, orden y páginas en `GET /products/`:**
 
@@ -49,7 +48,7 @@ Cómo se ordena:
 
 La app muestra el inventario de a páginas: los primeros 20 productos con los filtros elegidos y, con «Cargar más», 10 más cada vez (`limit=20&offset=0`, después `limit=10&offset=20`, y así).
 
-**Stock total de un producto (`/products/groups` y `/products/group`).** «El mismo producto» es el que tiene igual nombre y categoría, sin distinguir mayúsculas, tildes ni espacios sobrantes; la marca no entra en la clave, ni nada de lo que cambia entre lotes (vencimiento, código de barras, ubicación, imagen). `/products/groups?q=` devuelve hasta 10 grupos cuyo nombre contiene `q`, cada uno con `stock_total`, `lotes` y `proximo_vencimiento`; `/products/group?nombre=&categoria=` devuelve el detalle con todos sus productos ordenados por vencimiento (los que no vencen, al final) y `404` si no existe.
+**Stock total (`/products/stock-total`).** Acepta los mismos filtros que el listado (`search` por nombre o marca, `categoria` y `ubicacion`) y devuelve `{ "stock_total": N, "products": M }` con la suma del stock y la cantidad de **todos** los productos que coinciden (no solo los de una página). La app lo muestra arriba del buscador del Inventario y lo vuelve a pedir cada vez que cambia la lista.
 
 **Últimos cambios (`/products/changes`).** Parámetros `limit` (1 a 50, default 5) y `offset`. Cada cambio trae el stock antes y después, que se reconstruye hacia atrás desde el stock actual con los movimientos del producto; las correcciones no aparecen, queda el movimiento corregido. Un producto con fecha de carga aporta además su entrada inicial.
 
