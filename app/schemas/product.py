@@ -18,6 +18,11 @@ def _codigo_canonico(valor: Optional[str]) -> Optional[str]:
     return barcode.normalizar(valor)
 
 
+# Tope de los campos de reglas de alerta del producto: 7 dígitos para el stock mínimo y 3 para los días de anticipación
+STOCK_MINIMO_MAX = 9_999_999
+DIAS_ALERTA_VENCIMIENTO_MAX = 999
+
+
 class ProductCreate(BaseModel):
     nombre: str = Field(..., max_length=20)
     marca: Optional[str] = None
@@ -28,8 +33,8 @@ class ProductCreate(BaseModel):
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
     codigo_barras: Optional[str] = None
-    stock_minimo: Optional[int] = Field(None, gt=0)
-    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0)
+    stock_minimo: Optional[int] = Field(None, gt=0, le=STOCK_MINIMO_MAX)
+    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0, le=DIAS_ALERTA_VENCIMIENTO_MAX)
 
     _codigo_barras = field_validator("codigo_barras")(_codigo_canonico)
 
@@ -44,8 +49,8 @@ class ProductUpdate(BaseModel):
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
     codigo_barras: Optional[str] = None
-    stock_minimo: Optional[int] = Field(None, gt=0)
-    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0)
+    stock_minimo: Optional[int] = Field(None, gt=0, le=STOCK_MINIMO_MAX)
+    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0, le=DIAS_ALERTA_VENCIMIENTO_MAX)
 
     _codigo_barras = field_validator("codigo_barras")(_codigo_canonico)
 
