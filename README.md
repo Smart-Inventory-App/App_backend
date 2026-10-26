@@ -149,6 +149,9 @@ Cada alerta trae, además de su tipo, nivel y los datos del motivo (`days_until_
 |--------|----------|-------------|
 | GET | `/profile/` | Perfil del usuario (se crea con los valores por defecto si no existe) |
 | PUT | `/profile/` | Actualizar datos personales, tipo de cuenta y configuración de alertas |
+| GET | `/profile/username-available?username=` | Si el nombre de usuario se puede usar: `{"available": true/false}` (el nombre de la propia cuenta cuenta como disponible) |
+
+**Nombre de usuario único.** Como máximo una cuenta puede tener un nombre de usuario, sin distinguir mayúsculas ni espacios en los bordes. `PUT /profile/` responde `409` con `profile.username_taken` si otra cuenta ya lo tiene. La regla solo mira los **cambios**: una cuenta que ya tenía un nombre repetido (de antes de esta regla) puede seguir guardando su perfil sin tocarlo. No hay índice único en la base justamente para no fallar con esos duplicados, y no requiere migración.
 
 Límites que valida `PUT /profile/` (responde `422` si no se cumplen; son los mismos que aplica la app):
 
