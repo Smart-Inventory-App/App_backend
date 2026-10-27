@@ -411,7 +411,7 @@ def test_restock_checks_the_alerts_of_the_product(client, db, monkeypatch):
 
     sent = []
 
-    async def understock(token, product, days, email):
+    async def understock(token, product, days, email, **extra):
         sent.append(days)
 
     monkeypatch.setattr(products_api, "_check_product_state", record)
@@ -431,7 +431,7 @@ def test_restock_notifies_when_the_new_stock_is_too_much(client, db, monkeypatch
 
     sent = []
 
-    async def overstock(token, product, days, email):
+    async def overstock(token, product, days, email, **extra):
         sent.append(days)
 
     monkeypatch.setattr(products_api, "_check_product_state", far)

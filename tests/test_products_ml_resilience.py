@@ -10,6 +10,7 @@ import logging
 import httpx
 
 from app.api import products as products_api
+from app.services import alert_engine
 from app.core.config import settings
 from app.models.alert import Alert
 from app.models.product import Product
@@ -63,7 +64,7 @@ def test_a_failure_while_creating_the_alert_does_not_break_the_update(client, db
     def boom(*args, **kwargs):
         raise RuntimeError("la base de datos se cayó")
 
-    monkeypatch.setattr(products_api, "_create_alert", boom)
+    monkeypatch.setattr(alert_engine, "upsert_alert", boom)
 
     with caplog.at_level(logging.ERROR, logger=products_api.logger.name):
         resp = client.put(f"/products/{product['id']}", json={"stock": 19}, headers=AUTH)
@@ -78,7 +79,7 @@ def test_a_failure_while_creating_the_alert_does_not_break_the_update(client, db
 def test_a_failure_while_creating_the_alert_does_not_break_a_consumption_event(client, db, notifications, ml_enabled, ml_transport, monkeypatch):
     product = create(client, nombre="Te")
     ml_transport(predict(1))
-    monkeypatch.setattr(products_api, "_create_alert", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("falla")))
+    monkeypatch.setattr(alert_engine, "upsert_alert", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("falla")))
 
     resp = client.post(f"/products/{product['id']}/events", json={"event_type": "consumed", "quantity": 2}, headers=AUTH)
 

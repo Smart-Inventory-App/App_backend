@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,7 @@ from app.core.security import get_current_user
 from app.models.profile import DEFAULT_ALERT_CHECK_HOUR, DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_USER_TYPE, UserProfile
 from app.models.user import AuthUser
 from app.schemas.user import PROFILE_TEXT_MAX, ProfileResponse, ProfileUpdate, NotificationToken
+from app.services import alert_job
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -96,6 +97,7 @@ async def username_available(
 @router.put("/", response_model=ProfileResponse)
 async def update_profile(
     data: ProfileUpdate,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -109,9 +111,12 @@ async def update_profile(
     profile.first_name = data.firstName
     profile.last_name = data.lastName
     profile.username = username
+    rules_changed = False
     if data.coverageDaysThreshold is not None:
+        rules_changed |= profile.stock_minimo != data.coverageDaysThreshold
         profile.stock_minimo = data.coverageDaysThreshold
     if data.expiryDaysThreshold is not None:
+        rules_changed |= profile.dias_alerta_vencimiento != data.expiryDaysThreshold
         profile.dias_alerta_vencimiento = data.expiryDaysThreshold
     if data.alertCheckHour is not None:
         profile.alert_check_hour = data.alertCheckHour
@@ -119,6 +124,9 @@ async def update_profile(
         profile.user_type = data.userType
     db.commit()
     db.refresh(profile)
+    if rules_changed:
+        # Con otra regla, las alertas de stock pueden ser otras: se vuelven a evaluar enseguida, sin mandar avisos
+        background_tasks.add_task(alert_job.run_daily_coverage_check, target_user_id=user_id, force=True, notify=False)
     return _to_response(user_id, current_user.get("email"), profile)
 
 @router.post("/register_notification_token", status_code=200)

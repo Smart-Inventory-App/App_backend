@@ -23,7 +23,7 @@ def create(client, **overrides):
 
 # ── vencimiento (no necesita ML) ──────────────────────────────────────────────
 
-def test_update_close_to_expiry_creates_a_warning_alert(client, db, notifications):
+def test_update_close_to_expiry_creates_a_critical_alert_inside_the_limit(client, db, notifications):
     product = create(client, nombre="Yogur")
     soon = (date.today() + timedelta(days=3)).isoformat()
 
@@ -32,22 +32,26 @@ def test_update_close_to_expiry_creates_a_warning_alert(client, db, notification
     assert resp.status_code == 200
     alert = db.query(Alert).filter(Alert.product_id == product["id"], Alert.type == "expiry").first()
     assert alert is not None
-    assert alert.level == "warning"
+    assert alert.level == "critical"
     assert notifications[0]["title"] == "Producto próximo a vencerse"
     assert notifications[0]["kind"] == "expiry"
     assert notifications[0]["product_name"]
 
 
-def test_a_second_update_upgrades_the_alert_to_critical(client, db, notifications):
+def test_an_expiry_near_the_limit_is_a_warning_and_becomes_critical_when_it_gets_closer(client, db, notifications):
     product = create(client, nombre="Queso")
-    soon = (date.today() + timedelta(days=3)).isoformat()
-    client.put(f"/products/{product['id']}", json={"vencimiento": soon}, headers=AUTH)
+    near = (date.today() + timedelta(days=9)).isoformat()
+    client.put(f"/products/{product['id']}", json={"vencimiento": near}, headers=AUTH)
+    alert = db.query(Alert).filter(Alert.product_id == product["id"], Alert.type == "expiry").first()
+    assert alert.level == "warning"
+    assert notifications == []  # solo se avisa cuando es crítica
 
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
     client.put(f"/products/{product['id']}", json={"vencimiento": tomorrow}, headers=AUTH)
 
-    alert = db.query(Alert).filter(Alert.product_id == product["id"], Alert.type == "expiry").first()
+    db.refresh(alert)
     assert alert.level == "critical"
+    assert [n["kind"] for n in notifications] == ["expiry"]
 
 
 def test_pushing_the_expiry_far_enough_deletes_the_alert(client, db, notifications):
@@ -72,8 +76,8 @@ def test_low_coverage_alert_is_created_from_the_ml_prediction(client, db, notifi
     assert resp.status_code == 200
     alert = db.query(Alert).filter(Alert.product_id == product["id"], Alert.type == "stock_low_coverage").first()
     assert alert is not None
-    assert alert.level == "warning"
-    assert any(n["title"] == "Stock por agotarse" and n["kind"] == "low_coverage" for n in notifications)
+    assert alert.level == "critical"  # 3 días es menos que el mínimo de 7
+    assert any(n["title"] == "Stock por agotarse" and n["kind"] == "low_coverage" and n["limit_days"] == 7 for n in notifications)
 
 
 def test_low_coverage_alert_is_critical_when_the_stockout_is_imminent(client, db, notifications, ml_enabled, ml_transport):
@@ -86,14 +90,15 @@ def test_low_coverage_alert_is_critical_when_the_stockout_is_imminent(client, db
     assert alert.level == "critical"
 
 
-def test_low_coverage_is_suppressed_right_after_a_restock(client, db, notifications, ml_enabled, ml_transport):
+def test_right_after_a_restock_the_alert_is_updated_but_no_warning_is_sent(client, db, notifications, ml_enabled, ml_transport):
     product = create(client, nombre="Aceite", stock=1)
     ml_transport(lambda req: httpx.Response(200, json={"daily_rate": 1.0, "days_until_stockout": 3}))
 
-    # El stock subió (restock): no se evalúa cobertura baja, sólo over/understock.
+    # El stock subió (restock): la alerta queda al día, pero el aviso lo da el de «compraste de menos»
     client.put(f"/products/{product['id']}", json={"stock": 2}, headers=AUTH)
 
-    assert db.query(Alert).filter(Alert.product_id == product["id"], Alert.type == "stock_low_coverage").count() == 0
+    assert db.query(Alert).filter(Alert.product_id == product["id"], Alert.type == "stock_low_coverage").count() == 1
+    assert not any(n["title"] == "Stock por agotarse" for n in notifications)
 
 
 def test_slow_pace_alert_is_created_when_consumption_wont_catch_the_expiry(client, db, notifications, ml_enabled, ml_transport):
