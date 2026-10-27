@@ -76,7 +76,9 @@ def _from_single(
         take("marca", "marca", _text(fields, "marca"))
         take("detalles", "descripcion",
              _truncate(_text(fields, "detalles"), MAX_DESCRIPCION, "descripcion", warnings))
-        _match_by_name(draft, read_name, products)
+        # Se compara todo lo que se leyó (nombre, marca y detalle) con el nombre, la marca y la descripción
+        read_text = " ".join(part for part in (read_name, draft.marca, _text(fields, "detalles")) if part)
+        _match_by_text(draft, read_text, products)
 
     elif doc_type is ScanDocType.EXPIRY_DATE:
         take("fecha_vencimiento", "vencimiento", _date(fields, "fecha_vencimiento"))
@@ -139,6 +141,15 @@ def _from_receipt(
 def _match_by_name(draft: ProductDraft, read_name: Optional[str], products: list[Product]) -> None:
     """Cuelga del borrador los productos del usuario que podrían ser éste."""
     found = matching.buscar(read_name, products)
+    draft.coincidencias = [_to_match(product, score) for product, score in found]
+
+    if found and found[0][1] >= matching.UMBRAL_CONFIABLE:
+        draft.coincidencia_id = found[0][0].id
+
+
+def _match_by_text(draft: ProductDraft, read_text: str, products: list[Product]) -> None:
+    """Como `_match_by_name`, pero contra el nombre, la marca y la descripción de los productos."""
+    found = matching.buscar_texto(read_text, products, maximo=matching.MAX_CANDIDATOS)
     draft.coincidencias = [_to_match(product, score) for product, score in found]
 
     if found and found[0][1] >= matching.UMBRAL_CONFIABLE:

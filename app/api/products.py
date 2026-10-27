@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from typing import Literal, Optional
 
 from app.models.alert import Alert
-from app.core import barcode
+from app.core import barcode, matching
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -542,6 +542,21 @@ async def suggest_products(
         .all()
     )
     return [_to_suggestion(p) for p in rows]
+
+
+@router.get("/match", response_model=list[ProductSuggestion])
+async def match_products(
+    q: str = Query(..., min_length=1, max_length=1000),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Los productos del usuario que se parecen a un texto leído de una etiqueta, de mejor a peor.
+
+    A diferencia de `/suggest` (que busca dentro del nombre), compara el texto con el nombre, la marca y la
+    descripción de cada producto, y tolera abreviaturas y palabras de más.
+    """
+    rows = db.query(Product).filter(Product.user_id == current_user["sub"]).all()
+    return [_to_suggestion(p) for p, _ in matching.buscar_texto(q, rows)]
 
 
 @router.get("/by-barcode/{codigo}", response_model=Optional[ProductSuggestion])

@@ -27,6 +27,7 @@
 | DELETE | `/products/{id}` | Eliminar producto |
 | GET | `/products/changes` | Últimos cambios de stock (entradas, salidas y modificaciones), del más nuevo al más viejo |
 | GET | `/products/stock-total` | Suma del stock y cantidad de productos que cumplen los mismos filtros que `GET /products/` |
+| GET | `/products/match?q=` | Productos que se parecen a un texto leído de una etiqueta, comparado con el nombre, la marca y la descripción |
 
 **Filtros, orden y páginas en `GET /products/`:**
 
@@ -47,6 +48,8 @@ Cómo se ordena:
 - **El id desempata siempre**, así dos páginas seguidas nunca repiten ni se saltean productos que tienen el mismo valor en el campo ordenado.
 
 La app muestra el inventario de a páginas: los primeros 20 productos con los filtros elegidos y, con «Cargar más», 10 más cada vez (`limit=20&offset=0`, después `limit=10&offset=20`, y así).
+
+**Búsqueda por texto escaneado (`/products/match`).** A diferencia de `/products/suggest` (que busca dentro del nombre), compara el texto leído con el nombre, la marca y la descripción de cada producto del usuario, tolera abreviaturas y palabras de más, y devuelve hasta 10 productos de mejor a peor. El escaneo de etiquetas usa el mismo criterio para armar las coincidencias del borrador.
 
 **Stock total (`/products/stock-total`).** Acepta los mismos filtros que el listado (`search` por nombre o marca, `categoria` y `ubicacion`) y devuelve `{ "stock_total": N, "products": M }` con la suma del stock y la cantidad de **todos** los productos que coinciden (no solo los de una página). La app lo muestra arriba del buscador del Inventario y lo vuelve a pedir cada vez que cambia la lista.
 

@@ -76,6 +76,33 @@ def test_suggest_products_matches_a_partial_name(client, db, no_alerts):
     assert [p["nombre"] for p in resp.json()] == ["Yogur Ser"]
 
 
+def test_match_products_compares_the_text_with_name_brand_and_description(client, db, no_alerts):
+    add_product(db, nombre="Cremoso", marca="La Serenisima")
+    add_product(db, nombre="Producto 7", descripcion="Aceite de girasol alto oleico")
+    add_product(db, nombre="Detergente")
+
+    por_marca = client.get("/products/match", params={"q": "la serenisima queso untable"}, headers=AUTH)
+    por_descripcion = client.get("/products/match", params={"q": "aceite girasol alto oleico"}, headers=AUTH)
+
+    assert [p["nombre"] for p in por_marca.json()] == ["Cremoso"]
+    assert [p["nombre"] for p in por_descripcion.json()] == ["Producto 7"]
+
+
+def test_match_products_only_returns_the_products_of_the_user(client, db, no_alerts):
+    add_product(db, nombre="Yogur Ser")
+    add_product(db, nombre="Yogur Ser", user_id="00000000-0000-0000-0000-000000000000")
+
+    resp = client.get("/products/match", params={"q": "yogur ser"}, headers=AUTH)
+
+    assert len(resp.json()) == 1
+
+
+def test_match_products_with_no_similar_product_is_empty(client, db, no_alerts):
+    add_product(db, nombre="Detergente")
+
+    assert client.get("/products/match", params={"q": "yogur"}, headers=AUTH).json() == []
+
+
 # ── código de barras: caso "no hay código" ────────────────────────────────────
 
 def test_by_barcode_with_a_blank_code_returns_null_not_422(client, db):
