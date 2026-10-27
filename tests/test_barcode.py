@@ -42,6 +42,9 @@ def no_alerts(monkeypatch):
         ("036000291452", "0036000291452"),       # UPC-A se guarda como EAN-13
         ("96385074", "96385074"),                # EAN-8
         ("10012345678902", "10012345678902"),    # GTIN-14 de una caja mayorista
+        ("2800283327677", "2800283327677"),      # no cierra el verificador: igual se acepta
+        ("7794640172020", "7794640172020"),
+        ("036000291453", "0036000291453"),       # UPC-A con verificador incorrecto: igual pasa a EAN-13
     ],
 )
 def test_valid_codes_are_normalized(written, canonical):
@@ -52,8 +55,8 @@ def test_valid_codes_are_normalized(written, canonical):
     "written",
     [
         "12345",           # ningún GTIN tiene 5 dígitos
-        "7794640172020",   # un dígito mal copiado: no cierra el verificador
-        "abc",             # antes se descartaba en silencio y quedaba "sin código"
+        "77946401720",     # 11 dígitos: un largo que no existe
+        "abc",            # antes se descartaba en silencio y quedaba "sin código"
         "7794640I72021",   # una I en lugar de un 1
         "77946401720²1",   # `isdigit()` lo acepta pero `int()` no puede convertirlo
     ],
@@ -78,8 +81,12 @@ def test_es_valido_is_true_for_a_correct_code():
     assert barcode.es_valido("7794640172021") is True
 
 
-def test_es_valido_is_false_for_a_bad_checksum():
-    assert barcode.es_valido("7794640172020") is False
+def test_es_valido_does_not_require_the_check_digit():
+    assert barcode.es_valido("7794640172020") is True
+
+
+def test_es_valido_is_false_for_a_wrong_length():
+    assert barcode.es_valido("77946401720") is False
 
 
 def test_es_valido_is_false_when_there_is_no_code():
@@ -94,7 +101,18 @@ def test_the_schema_stores_the_canonical_form():
 
 def test_the_schema_rejects_an_invalid_code():
     with pytest.raises(ValidationError):
-        ProductCreate(**ALTA, codigo_barras="7794640172020")
+        ProductCreate(**ALTA, codigo_barras="77946401720")
+
+
+def test_the_schema_accepts_a_code_whose_check_digit_does_not_close():
+    assert ProductCreate(**ALTA, codigo_barras="2800283327677").codigo_barras == "2800283327677"
+
+
+def test_create_saves_a_code_whose_check_digit_does_not_close(client, db):
+    resp = client.post("/products/", json={**ALTA, "codigo_barras": "2800283327677"}, headers=AUTH)
+
+    assert resp.status_code == 201
+    assert resp.json()["codigo_barras"] == "2800283327677"
 
 
 def test_a_partial_update_without_a_code_does_not_touch_it():
@@ -165,6 +183,15 @@ def test_lookup_of_an_unknown_code_returns_null(client, db):
 
     assert resp.status_code == 200
     assert resp.json() is None
+
+
+def test_lookup_finds_a_product_whose_code_does_not_close_the_check_digit(client, db):
+    product = add_product(db, codigo_barras="2800283327677")
+
+    resp = client.get("/products/by-barcode/2800283327677", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json()["id"] == product.id
 
 
 def test_lookup_of_a_malformed_code_is_422(client, db):

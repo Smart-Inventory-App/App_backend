@@ -6,12 +6,11 @@ from app.core import barcode
 
 
 def _codigo_canonico(valor: Optional[str]) -> Optional[str]:
-    """Valida el código de barras y lo deja en su forma canónica.
+    """Valida el código de barras (solo números, de 8, 12, 13 o 14 dígitos) y lo deja en su forma canónica.
 
     Se hace en el schema y no en cada endpoint para que ningún camino de alta o
-    edición pueda saltearlo: un código que no cierra el dígito verificador —o un
-    UPC-A guardado sin normalizar— después no coincide con lo que lee el escáner,
-    y el producto deja de encontrarse por código. `CodigoInvalido` hereda de
+    edición pueda saltearlo: un UPC-A guardado sin normalizar después no coincide
+    con lo que lee el escáner, y el producto deja de encontrarse por código. `CodigoInvalido` hereda de
     `ValueError`, así que llega al cliente como un 422 más, igual que cualquier
     otro campo mal cargado.
     """
