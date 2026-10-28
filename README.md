@@ -141,7 +141,7 @@ Varios clientes escaneando simultáneamente no se bloquean entre sí: el worker 
 | GET | `/alerts/critical_alerts` | Solo las críticas (con el nivel calculado al leer) |
 | GET | `/alerts/stock_alerts` | Las de stock mínimo (`stock_low_coverage`), que traen en la misma fila la reposición sugerida (`suggested_qty`: cuántas unidades comprar para volver a la cobertura configurada) |
 | GET | `/alerts/expiry_alerts` | Las de vencimiento y de ritmo lento (`expiry`, `slow_pace`) |
-| GET | `/alerts/summary` | Cantidad de alertas por nivel (`critical`, `warning`, `info`) y `total`, sacadas de la misma lista que ve el usuario; más `expiring` y `low_stock`: los productos con una alerta crítica de vencimiento y de stock mínimo (los números del inicio de la app) |
+| GET | `/alerts/summary` | Cantidad de alertas por nivel (`critical`, `warning`, `info`) y `total`, sacadas de la misma lista que ve el usuario; más `expiring` y `low_stock`: los productos con alertas de la opción «Vencimiento» (vencimiento y ritmo lento) y de la opción «Stock» del Centro de Alertas, de cualquier nivel y con las de predicción (los números del inicio de la app) |
 
 Cada alerta trae, además de su tipo, nivel y los datos del motivo (`days_until_stockout`, `units_wasted`), lo que la app necesita para mostrarla sin pedir el producto aparte: `product_name`, `image_url`, `product_stock` (un stock de `0` se devuelve como `0`, no como vacío), `product_expiry`, `product_category` y `product_brand`. La app los usa en la ventana «Detalle de Alerta» que se abre al tocar una entrada.
 

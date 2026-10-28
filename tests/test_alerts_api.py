@@ -298,16 +298,47 @@ def test_the_summary_does_not_count_alerts_whose_product_no_longer_exists(client
     assert summary["total"] == 0
 
 
-def test_the_summary_tells_how_many_products_are_expiring_and_low_on_stock(client, db):
+def test_the_summary_tells_how_many_products_have_expiry_and_stock_alerts_of_any_level(client, db):
     add_product_with_alert(db, expiry_in=2)
     add_product_with_alert(db, expiry_in=-1)
-    add_product_with_alert(db, expiry_in=9)  # advertencia: no cuenta
+    add_product_with_alert(db, expiry_in=9)  # advertencia: también cuenta
     add_product_with_alert(db, alert_type="stock_low_coverage", days_until_stockout=1)
-    add_product_with_alert(db, alert_type="stock_low_coverage", days_until_stockout=8)  # advertencia: no cuenta
+    add_product_with_alert(db, alert_type="stock_low_coverage", days_until_stockout=8)  # advertencia: también cuenta
 
     summary = client.get("/alerts/summary", headers=AUTH).json()
 
-    assert (summary["expiring"], summary["low_stock"]) == (2, 1)
+    assert (summary["expiring"], summary["low_stock"]) == (3, 2)
+
+
+def test_the_slow_pace_prediction_counts_as_a_product_with_an_expiry_alert(client, db):
+    add_product_with_alert(db, expiry_in=2)
+    add_product_with_alert(db, alert_type="slow_pace")
+
+    assert client.get("/alerts/summary", headers=AUTH).json()["expiring"] == 2
+
+
+def test_a_product_with_two_alerts_of_the_same_kind_counts_once(client, db):
+    product, _ = add_product_with_alert(db, alert_type="stock_low_coverage", days_until_stockout=1)
+    db.add(Alert(user_id=UUID(TEST_USER_ID), product_id=product.id, type="stock_low_coverage", level="warning", days_until_stockout=9))
+    db.commit()
+
+    summary = client.get("/alerts/summary", headers=AUTH).json()
+
+    assert summary["low_stock"] == 1
+
+
+def test_the_numbers_of_the_home_are_the_products_of_each_option_of_the_alert_center(client, db):
+    add_product_with_alert(db, expiry_in=2)
+    add_product_with_alert(db, alert_type="slow_pace")
+    add_product_with_alert(db, alert_type="stock_low_coverage", days_until_stockout=1)
+    add_product_with_alert(db, alert_type="stock_low_coverage", days_until_stockout=8)
+
+    summary = client.get("/alerts/summary", headers=AUTH).json()
+
+    expiry_options = alerts(client, "/alerts/expiry_alerts")
+    stock_options = alerts(client, "/alerts/stock_alerts")
+    assert summary["expiring"] == len({a["product_id"] for a in expiry_options})
+    assert summary["low_stock"] == len({a["product_id"] for a in stock_options})
 
 
 def test_the_summary_of_a_user_without_alerts_is_all_zeros(client, db):

@@ -115,16 +115,18 @@ async def get_stock_alerts(current_user=Depends(get_current_user), db: Session =
 async def get_alert_summary(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Cuántas alertas hay por nivel. Sale de la misma lista que ve el usuario, así los números siempre coinciden.
 
-    `expiring` y `low_stock` son los productos con una alerta crítica de vencimiento y de stock mínimo: lo que muestra el
-    inicio de la app.
+    `expiring` y `low_stock` son los productos con alertas de la opción «Vencimiento» (vencimiento y ritmo lento) y de
+    la opción «Stock» del Centro de Alertas, de cualquier nivel y también las de predicción: lo que muestra el inicio de
+    la app, el mismo número de productos que se ve al abrir cada opción.
     """
     alerts = alerts_of_user(db, current_user["sub"])
     count = lambda level: sum(1 for a in alerts if a.level == level)
+    products_with = lambda types: len({a.product_id for a in alerts if a.type in types})
     return {
         "critical": count("critical"),
         "warning": count("warning"),
         "info": count("info"),
         "total": len(alerts),
-        "expiring": sum(1 for a in alerts if a.type == "expiry" and a.level == "critical"),
-        "low_stock": sum(1 for a in alerts if a.type == "stock_low_coverage" and a.level == "critical"),
+        "expiring": products_with(("expiry", "slow_pace")),
+        "low_stock": products_with(("stock_low_coverage",)),
     }
