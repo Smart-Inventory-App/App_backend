@@ -15,11 +15,15 @@ router = APIRouter(prefix="/trends", tags=["trends"])
 TOP_PRODUCTS = 5
 
 
-def _utc_day(moment: datetime):
-    """Día calendario UTC de un instante. Sin zona horaria se asume UTC."""
+# Hora argentina (UTC-3, sin horario de verano): los días del gráfico se cuentan con ella
+AR_TZ = timezone(timedelta(hours=-3))
+
+
+def _ar_day(moment: datetime):
+    """Día calendario argentino de un instante. Sin zona horaria se asume UTC (así se guardan los eventos)."""
     if moment.tzinfo is None:
-        return moment.date()
-    return moment.astimezone(timezone.utc).date()
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(AR_TZ).date()
 
 
 @router.get("/", response_model=TrendsResponse)
@@ -29,10 +33,10 @@ def get_trends(
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["sub"]
-    # Todo en UTC: el servidor puede estar en otra zona y los eventos se guardan en UTC.
-    today = datetime.now(timezone.utc).date()
+    # Los días son los de Argentina; el servidor puede estar en otra zona y los eventos se guardan en UTC.
+    today = datetime.now(AR_TZ).date()
     since = today - timedelta(days=period - 1)
-    since_start = datetime.combine(since, time.min, tzinfo=timezone.utc)
+    since_start = datetime.combine(since, time.min, tzinfo=AR_TZ)
 
     reversed_ids = db.query(ConsumptionEvent.reverses_event_id).filter(
         ConsumptionEvent.reverses_event_id.isnot(None)
@@ -55,7 +59,7 @@ def get_trends(
     for e in events:
         if e.event_type not in CONSUMPTION_EVENT_TYPES:
             continue
-        day = _utc_day(e.consumed_at).isoformat()
+        day = _ar_day(e.consumed_at).isoformat()
         per_day[day] = per_day.get(day, 0) + e.quantity
 
     consumo_por_dia = []
