@@ -847,7 +847,7 @@ def test_loading_a_product_again_through_the_api_is_an_entry_of_the_added_stock(
     assert resp.json()[0]["producto"]["id"] == first["id"]
 
 
-def test_a_correction_shows_the_corrected_movement_and_not_the_reversal(client, db, no_alerts):
+def test_a_correction_leaves_a_single_modification_next_to_the_corrected_movement(client, db, no_alerts):
     leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
     client.post(f"/products/{leche.id}/events", json={"event_type": "consumed", "quantity": 4}, headers=AUTH)
     event = db.query(ConsumptionEvent).one()
@@ -855,7 +855,7 @@ def test_a_correction_shows_the_corrected_movement_and_not_the_reversal(client, 
     client.put(f"/products/{leche.id}/events/{event.id}", json={"event_type": "sold", "quantity": 4}, headers=AUTH)
 
     kinds = [c["kind"] for c in get_changes(client, limit=10).json()]
-    assert kinds == ["salida", "entrada"]
+    assert kinds == ["modificacion", "salida", "entrada"]
 
 
 def test_the_limit_is_respected_and_validated(client, db, no_alerts):
@@ -930,3 +930,127 @@ def test_changes_require_a_token(client, db):
         assert client.get("/products/changes").status_code in (401, 403)
     finally:
         app.dependency_overrides[get_current_user] = override
+
+
+# ── historial del producto: notas con fecha, dirección fija y «Últimos cambios» ──
+
+def _stamp(moment):
+    from datetime import timezone
+
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M")
+
+
+def _history_notes(client, product):
+    return [e["note"] for e in client.get(f"/products/{product.id}/consumption", headers=AUTH).json() if e["note"]]
+
+
+def test_the_notes_of_a_correction_say_the_date_of_the_record_and_not_its_number(client, db, no_alerts):
+    product = add_product(db, stock=10)
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 3}, headers=AUTH)
+    original = _latest_event(db, product.id)
+
+    client.put(f"/products/{product.id}/events/{original.id}", json={"event_type": "sold", "quantity": 5}, headers=AUTH)
+
+    notes = _history_notes(client, product)
+    stamp = _stamp(original.consumed_at)
+    assert notes == [f"Corrige el registro del {stamp}", f"Corrige el registro del {stamp}"]
+    assert all("#" not in n and "antes" not in n for n in notes)
+
+
+def test_a_note_written_by_the_user_is_kept_and_undoing_says_deshace(client, db, no_alerts):
+    product = add_product(db, stock=10)
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 3}, headers=AUTH)
+    first = _latest_event(db, product.id)
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 2}, headers=AUTH)
+    second = _latest_event(db, product.id)
+    client.put(f"/products/{product.id}/events/{first.id}", json={"event_type": "consumed", "quantity": 4, "note": "Me equivoqué"}, headers=AUTH)
+    client.delete(f"/products/{product.id}/events/{second.id}", headers=AUTH)
+
+    notes = _history_notes(client, product)
+
+    assert "Me equivoqué" in notes
+    assert f"Deshace el registro del {_stamp(second.consumed_at)}" in notes
+
+
+def test_old_notes_with_a_number_are_shown_with_the_date(client, db, no_alerts):
+    product = add_product(db, stock=10)
+    old = ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=3, event_type="consumed")
+    db.add(old)
+    db.commit()
+    db.refresh(old)
+    db.add_all([
+        ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=3, event_type="restocked",
+                         note=f"Corrección: revierte el registro #{old.id}", reverses_event_id=old.id),
+        ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=5, event_type="consumed",
+                         note=f"Corrige el registro #{old.id} (antes: 3 consumed)"),
+        ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=1, event_type="consumed",
+                         note=f"Deshecho: revierte el registro #{old.id}"),
+        ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=1, event_type="consumed",
+                         note="Corrige el registro #999999 (antes: 3 consumed)"),
+    ])
+    db.commit()
+
+    stamp = _stamp(old.consumed_at)
+    assert _history_notes(client, product) == [
+        f"Corrige el registro del {stamp}", f"Corrige el registro del {stamp}", f"Deshace el registro del {stamp}", "Corrige un registro anterior",
+    ]
+
+
+def test_an_entry_never_becomes_an_exit_nor_an_exit_an_entry(client, db, no_alerts):
+    product = add_product(db, stock=15, created_at=CREATED)
+    entrada = add_event(db, product, 5, "restocked", at_time(2))
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 3}, headers=AUTH)
+    salida = _latest_event(db, product.id)
+    base = f"/products/{product.id}/events"
+
+    assert client.put(f"{base}/{entrada.id}", json={"event_type": "sold", "quantity": 2}, headers=AUTH).status_code == 400
+    assert client.put(f"{base}/{salida.id}", json={"event_type": "restocked", "quantity": 2}, headers=AUTH).status_code == 400
+    db.refresh(product)
+    assert product.stock == 12
+    assert client.put(f"{base}/{salida.id}", json={"event_type": "expired", "quantity": 2}, headers=AUTH).status_code == 200
+    assert client.put(f"{base}/{entrada.id}", json={"event_type": "restocked", "quantity": 4}, headers=AUTH).status_code == 200
+
+
+def test_editing_an_entry_leaves_one_modification_in_the_latest_changes(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=35, created_at=CREATED)
+    entry = add_event(db, leche, 15, "restocked", at_time(2))
+
+    client.put(f"/products/{leche.id}/events/{entry.id}", json={"event_type": "restocked", "quantity": 13}, headers=AUTH)
+
+    assert [(c["kind"], c["stock_before"], c["stock_after"], c["quantity"]) for c in get_changes(client, limit=10).json()] == [
+        ("modificacion", 35, 33, 2),
+        ("entrada", 20, 35, 15),
+        ("entrada", 0, 20, 20),
+    ]
+
+
+def test_undoing_a_record_leaves_a_modification_with_the_stock_before_and_after(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
+    client.post(f"/products/{leche.id}/events", json={"event_type": "consumed", "quantity": 4}, headers=AUTH)
+    salida = _latest_event(db, leche.id)
+
+    client.delete(f"/products/{leche.id}/events/{salida.id}", headers=AUTH)
+
+    assert [(c["kind"], c["stock_before"], c["stock_after"], c["quantity"]) for c in get_changes(client, limit=10).json()] == [
+        ("modificacion", 6, 10, 4),
+        ("salida", 10, 6, 4),
+        ("entrada", 0, 10, 10),
+    ]
+
+
+def test_two_edits_leave_two_modifications_in_time_order(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
+    client.post(f"/products/{leche.id}/events", json={"event_type": "consumed", "quantity": 4}, headers=AUTH)
+    salida = _latest_event(db, leche.id)
+    client.put(f"/products/{leche.id}/events/{salida.id}", json={"event_type": "sold", "quantity": 3}, headers=AUTH)
+    corrected = _latest_event(db, leche.id)
+    client.put(f"/products/{leche.id}/events/{corrected.id}", json={"event_type": "sold", "quantity": 1}, headers=AUTH)
+
+    assert [(c["kind"], c["stock_before"], c["stock_after"]) for c in get_changes(client, limit=10).json()] == [
+        ("modificacion", 7, 9),
+        ("modificacion", 6, 7),
+        ("salida", 10, 6),
+        ("entrada", 0, 10),
+    ]

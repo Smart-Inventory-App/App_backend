@@ -53,7 +53,7 @@ La app muestra el inventario de a páginas: los primeros 20 productos con los fi
 
 **Stock total (`/products/stock-total`).** Acepta los mismos filtros que el listado (`search` por nombre o marca, `categoria` y `ubicacion`) y devuelve `{ "stock_total": N, "products": M }` con la suma del stock y la cantidad de **todos** los productos que coinciden (no solo los de una página). La app lo muestra arriba del buscador del Inventario y lo vuelve a pedir cada vez que cambia la lista.
 
-**Últimos cambios (`/products/changes`).** Parámetros `limit` (1 a 50, default 5) y `offset`. Cada cambio trae el stock antes y después, que se reconstruye hacia atrás desde el stock actual con los movimientos del producto; las correcciones no aparecen, queda el movimiento corregido. Un producto con fecha de carga aporta además su entrada inicial.
+**Últimos cambios (`/products/changes`).** Parámetros `limit` (1 a 50, default 5) y `offset`. Cada cambio trae el stock antes y después, que se reconstruye hacia atrás desde el stock actual con los movimientos del producto; el movimiento corregido sigue apareciendo y cada corrección o deshacer deja UNA sola entrada de «modificación» con el efecto neto (si una entrada de +15 que llevó el stock de 20 a 35 se edita a +13, aparece una modificación 35 → 33). Un producto con fecha de carga aporta además su entrada inicial.
 
 ### Schema de producto
 

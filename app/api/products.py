@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -406,6 +407,56 @@ def _naive_utc(value: datetime) -> datetime:
     return value
 
 
+# Las notas automáticas de las correcciones dicen cuándo se hizo el registro que corrigen (hora argentina), no su número
+AR_TZ = timezone(timedelta(hours=-3))
+_LEGACY_NOTE = re.compile(r"^(Corrección: revierte|Deshecho: revierte|Corrige) el registro #(\d+)(?: \(antes:.*\))?$")
+
+
+def _event_stamp(moment: datetime) -> str:
+    """«28/10/2026 15:29», en hora argentina."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(AR_TZ).strftime("%d/%m/%Y %H:%M")
+
+
+def _clean_note(note, by_id: dict):
+    """Las notas viejas mencionaban «el registro #43» y «(antes: ...)»: se muestran con la fecha del registro."""
+    match = _LEGACY_NOTE.match(note or "")
+    if not match:
+        return note
+    verb = "Deshace" if match.group(1).startswith("Deshecho") else "Corrige"
+    target = by_id.get(int(match.group(2)))
+    return f"{verb} el registro del {_event_stamp(target.consumed_at)}" if target else f"{verb} un registro anterior"
+
+
+def _check_same_direction(event, new_event_type: str) -> None:
+    """Una entrada sigue siendo entrada y una salida sigue siendo salida: solo cambian las unidades (y el motivo de la salida)."""
+    if (event.event_type == "restocked") != (new_event_type == "restocked"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Una entrada no puede pasar a ser una salida, ni una salida una entrada",
+        )
+
+
+def _correction_companion(reversal, by_id: dict):
+    """Al corregir un registro se guardan, juntos, la reversión y el movimiento nuevo (el que sigue y es del mismo instante).
+    Al deshacer no hay movimiento nuevo."""
+    following = by_id.get(reversal.id + 1)
+    if (
+        following is not None
+        and following.reverses_event_id is None
+        and following.product_id == reversal.product_id
+        and _naive_utc(following.consumed_at) == _naive_utc(reversal.consumed_at)
+    ):
+        return following
+    return None
+
+
+def _is_correction_companion(event, by_id: dict) -> bool:
+    previous = by_id.get(event.id - 1)
+    return previous is not None and previous.reverses_event_id is not None and _correction_companion(previous, by_id) is event
+
+
 @router.get("/changes", response_model=list[StockChange])
 async def recent_stock_changes(
     limit: int = Query(5, ge=1, le=50),
@@ -429,7 +480,8 @@ async def recent_stock_changes(
         .order_by(ConsumptionEvent.consumed_at.desc(), ConsumptionEvent.id.desc())
         .all()
     )
-    reversed_ids = {e.reverses_event_id for e in events if e.reverses_event_id is not None}
+    by_id = {e.id: e for e in events}
+    after_of: dict[int, int] = {}
 
     running = {product_id: product.stock for product_id, product in products.items()}
     changes: list[tuple[tuple[datetime, int], StockChange]] = []
@@ -440,7 +492,22 @@ async def recent_stock_changes(
         after = running[product.id]
         before = after - _stock_effect(event.event_type, event.quantity)
         running[product.id] = before
-        if event.reverses_event_id is not None or event.id in reversed_ids:
+        after_of[event.id] = after
+        producto = ProductResponse.model_validate(product, from_attributes=True)
+        if event.reverses_event_id is not None:
+            # Una corrección o un deshacer deja UNA entrada de «modificación» con el efecto neto (35 → 33), y el movimiento
+            # corregido sigue apareciendo con su stock de entonces (20 → 35)
+            companion = _correction_companion(event, by_id)
+            final_after = after_of[companion.id] if companion is not None else after
+            changes.append((
+                (_naive_utc(event.consumed_at), 1 + (companion.id if companion is not None else event.id)),
+                StockChange(
+                    id=f"event-{event.id}", kind="modificacion", stock_before=before, stock_after=final_after,
+                    quantity=abs(final_after - before), occurred_at=event.consumed_at, producto=producto,
+                ),
+            ))
+            continue
+        if _is_correction_companion(event, by_id):
             continue
         if (event.note or "").startswith(STOCK_EDIT_NOTE):
             kind = "modificacion"
@@ -449,13 +516,8 @@ async def recent_stock_changes(
         changes.append((
             (_naive_utc(event.consumed_at), 1 + event.id),
             StockChange(
-                id=f"event-{event.id}",
-                kind=kind,
-                stock_before=before,
-                stock_after=after,
-                quantity=event.quantity,
-                occurred_at=event.consumed_at,
-                producto=ProductResponse.model_validate(product, from_attributes=True),
+                id=f"event-{event.id}", kind=kind, stock_before=before, stock_after=after, quantity=event.quantity,
+                occurred_at=event.consumed_at, producto=producto,
             ),
         ))
 
@@ -827,13 +889,14 @@ async def get_consumption_history(
         .all()
     )
     reversed_ids = {e.reverses_event_id for e in events if e.reverses_event_id is not None}
+    by_id = {e.id: e for e in events}
     return [
         {
             "id": e.id,
             "quantity": e.quantity,
             "event_type": e.event_type,
             "consumed_at": e.consumed_at,
-            "note": e.note,
+            "note": _clean_note(e.note, by_id),
             "actor_email": e.actor_email,
             "reverses_event_id": e.reverses_event_id,
             "reversed": e.id in reversed_ids,
@@ -953,6 +1016,7 @@ async def update_consumption_event(
     actor_email = current_user.get("email")
     product = _get_user_product(product_id, user_id, db)
     event = _get_own_consumption_event(product_id, event_id, db)
+    _check_same_direction(event, data.event_type)
 
     new_stock = (
         product.stock
@@ -972,7 +1036,7 @@ async def update_consumption_event(
         quantity=event.quantity,
         event_type=reversal_type,
         actor_email=actor_email,
-        note=f"Corrección: revierte el registro #{event.id}",
+        note=f"Corrige el registro del {_event_stamp(event.consumed_at)}",
         reverses_event_id=event.id,
     ))
     new_event = ConsumptionEvent(
@@ -981,7 +1045,7 @@ async def update_consumption_event(
         quantity=data.quantity,
         event_type=data.event_type,
         actor_email=actor_email,
-        note=data.note or f"Corrige el registro #{event.id} (antes: {event.quantity} {event.event_type})",
+        note=data.note or f"Corrige el registro del {_event_stamp(event.consumed_at)}",
     )
     db.add(new_event)
     product.stock = new_stock
@@ -1027,7 +1091,7 @@ async def delete_consumption_event(
         quantity=quantity,
         event_type=reversal_type,
         actor_email=actor_email,
-        note=f"Deshecho: revierte el registro #{event.id}",
+        note=f"Deshace el registro del {_event_stamp(event.consumed_at)}",
         reverses_event_id=event.id,
     ))
     product.stock = new_stock
