@@ -75,6 +75,24 @@ def test_trigger_alerts_for_one_user(client, db, monkeypatch):
     assert "alerts_sent" in resp.json()
 
 
+def test_trigger_alerts_for_one_user_without_notifying(client, db, monkeypatch):
+    monkeypatch.setattr(alert_job, "SessionLocal", TestingSessionLocal)
+    calls = []
+
+    async def fake_check(target_user_id=None, force=False, notify=True):
+        calls.append((target_user_id, force, notify))
+        return {"alerts_sent": 0}
+
+    monkeypatch.setattr("app.api.internal.run_daily_coverage_check", fake_check)
+
+    resp = client.post(f"/internal/alerts/run/{TEST_USER_ID}?notify=false", headers=TOKEN)
+
+    assert resp.status_code == 200
+    assert calls == [(TEST_USER_ID, True, False)]
+    client.post(f"/internal/alerts/run/{TEST_USER_ID}", headers=TOKEN)
+    assert calls[-1] == (TEST_USER_ID, True, True)  # sin el parámetro, se avisa como siempre
+
+
 def test_internal_endpoints_reject_a_missing_token_too(client, db, monkeypatch):
     monkeypatch.setattr(alert_job, "SessionLocal", TestingSessionLocal)
 

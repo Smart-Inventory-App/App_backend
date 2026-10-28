@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
 from fastapi.security import APIKeyHeader
 from sqlalchemy.orm import Session
 
@@ -42,9 +42,10 @@ async def trigger_alerts_all():
 
 
 @router.post("/alerts/run/{user_id}", dependencies=[Depends(_verify_token)])
-async def trigger_alerts_user(user_id: str):
-    """Dispara el chequeo de alertas para un usuario específico (forzado)."""
-    return await run_daily_coverage_check(target_user_id=user_id, force=True)
+async def trigger_alerts_user(user_id: str, notify: bool = Query(True)):
+    """Dispara el chequeo de alertas para un usuario específico (forzado). Con `notify=false` solo actualiza las
+    alertas, sin mandar avisos: lo usa el backoffice cuando el usuario cambia una regla o carga un producto."""
+    return await run_daily_coverage_check(target_user_id=user_id, force=True, notify=notify)
 
 
 @router.get("/products", dependencies=[Depends(_verify_token)])
