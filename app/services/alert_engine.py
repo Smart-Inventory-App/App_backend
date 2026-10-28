@@ -104,7 +104,7 @@ def apply_slow_pace(
         clear_alerts(db, existing, "slow_pace", commit=commit)
         return False
     limit, _ = alert_rules.expiry_limit(product.dias_alerta_vencimiento, profile)
-    level = "critical" if days_until_expiry <= limit else "warning"
+    level = "critical" if days_until_expiry < limit else "warning"
     upsert_alert(db, product, existing, "slow_pace", level, units_wasted=units_wasted, commit=commit)
     return True
 

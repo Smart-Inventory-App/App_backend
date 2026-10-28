@@ -160,10 +160,10 @@ def test_the_alerts_of_the_rules_of_the_user_come_first_then_the_most_serious(cl
 # ── los niveles salen de las reglas ───────────────────────────────────────────
 
 def test_an_expiry_inside_the_limit_is_critical_and_one_near_the_limit_is_a_warning(client, db):
-    # límite general de fábrica: 7 días; "cerca" llega hasta 4 días más
+    # límite general de fábrica: 7 días («menos de 7»); "cerca" llega hasta 4 días más
+    add_product_with_alert(db, expiry_in=6)
     add_product_with_alert(db, expiry_in=7)
-    add_product_with_alert(db, expiry_in=8)
-    add_product_with_alert(db, expiry_in=11)
+    add_product_with_alert(db, expiry_in=10)
 
     levels = sorted((a["limit_days"], a["level"]) for a in alerts(client))
 
@@ -171,7 +171,7 @@ def test_an_expiry_inside_the_limit_is_critical_and_one_near_the_limit_is_a_warn
 
 
 def test_an_expiry_far_from_the_limit_has_no_alert(client, db):
-    add_product_with_alert(db, expiry_in=12)
+    add_product_with_alert(db, expiry_in=11)
 
     assert alerts(client) == []
 
@@ -186,8 +186,8 @@ def test_an_expired_product_is_critical(client, db):
 
 def test_the_limit_of_the_profile_rules_every_product_that_has_no_rule_of_its_own(client, db):
     set_profile(db, dias_alerta_vencimiento=3)
-    add_product_with_alert(db, expiry_in=3)
-    add_product_with_alert(db, expiry_in=5)
+    add_product_with_alert(db, expiry_in=2)
+    add_product_with_alert(db, expiry_in=4)
     add_product_with_alert(db, expiry_in=9)
 
     items = sorted(alerts(client), key=lambda a: a["id"])
@@ -263,7 +263,7 @@ def test_the_minimum_stock_of_the_product_beats_the_one_of_the_profile(client, d
 
 def test_a_slow_pace_alert_is_critical_when_the_expiry_is_inside_the_limit(client, db):
     product, _ = add_product_with_alert(db, alert_type="slow_pace")
-    product.vencimiento = days_from_now(5)
+    product.vencimiento = days_from_now(6)
     db.commit()
     assert alerts(client)[0]["level"] == "critical"
 

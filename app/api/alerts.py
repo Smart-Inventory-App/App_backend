@@ -59,7 +59,7 @@ def alerts_of_user(db: Session, user_id: str, *filters, level: str | None = None
         if alert.type == "expiry" and vencimiento is not None:
             alert_level = alert_rules.expiry_level(alert_rules.days_until(vencimiento), limit_days) or alert.level
         elif alert.type == "slow_pace" and vencimiento is not None:
-            alert_level = "critical" if alert_rules.days_until(vencimiento) <= limit_days else "warning"
+            alert_level = "critical" if alert_rules.days_until(vencimiento) < limit_days else "warning"
         elif alert.type == "stock_low_coverage":
             limit_days, scope = alert_rules.coverage_limit(stock_minimo, profile)
             alert_level = alert_rules.coverage_level(alert.days_until_stockout, limit_days)

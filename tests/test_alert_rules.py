@@ -32,7 +32,7 @@ def test_without_a_profile_the_factory_limits_apply():
     assert alert_rules.coverage_limit(None, None) == (7, "general")
 
 
-@pytest.mark.parametrize("days, expected", [(-5, "critical"), (0, "critical"), (7, "critical"), (8, "warning"), (11, "warning"), (12, None)])
+@pytest.mark.parametrize("days, expected", [(-5, "critical"), (0, "critical"), (6, "critical"), (7, "warning"), (10, "warning"), (11, None)])
 def test_expiry_levels_with_a_limit_of_seven_days(days, expected):
     assert alert_rules.expiry_level(days, 7) == expected
 

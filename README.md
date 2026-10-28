@@ -137,7 +137,7 @@ Varios clientes escaneando simultáneamente no se bloquean entre sí: el worker 
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
-| GET | `/alerts/` | Todas las alertas del usuario. Primero las que salen de sus reglas (`origin: "rule"`: `expiry` y `stock_low_coverage`) y después las del sistema (`origin: "system"`: `slow_pace`), las más graves primero en cada grupo. El nivel (`critical` o `warning`) se calcula al leer con la regla vigente, y cada alerta trae `limit_days` y `rule_scope` (`product` o `general`): qué regla se aplicó |
+| GET | `/alerts/` | Todas las alertas del usuario. Primero las que salen de sus reglas (`origin: "rule"`: `expiry` y `stock_low_coverage`) y después las del sistema (`origin: "system"`: `slow_pace`), las más graves primero en cada grupo. El nivel (`critical` o `warning`) se calcula al leer con la regla vigente (las dos reglas son «menos de»: con un límite de 7 días, a los 7 todavía no es crítica; «cerca» llega hasta la mitad del límite más allá, con un mínimo de 2 días), y cada alerta trae `limit_days` y `rule_scope` (`product` o `general`): qué regla se aplicó |
 | GET | `/alerts/critical_alerts` | Solo las críticas (con el nivel calculado al leer) |
 | GET | `/alerts/stock_alerts` | Las de stock mínimo (`stock_low_coverage`), que traen en la misma fila la reposición sugerida (`suggested_qty`: cuántas unidades comprar para volver a la cobertura configurada) |
 | GET | `/alerts/expiry_alerts` | Las de vencimiento y de ritmo lento (`expiry`, `slow_pace`) |

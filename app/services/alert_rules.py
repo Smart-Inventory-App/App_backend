@@ -3,7 +3,7 @@
 Hay dos reglas que configura el usuario, en su perfil (valen para todos sus productos) y, si quiere, en cada producto
 (la del producto manda sobre la del perfil):
 
-- **Vencimiento**: días de anticipación. Se alerta cuando faltan esos días o menos para que venza (o ya venció).
+- **Vencimiento**: días de anticipación. Se alerta cuando faltan menos de esos días para que venza (o ya venció).
 - **Stock mínimo**: días de cobertura. Se alerta cuando, al ritmo de consumo que calcula el modelo predictivo, el stock
   alcanza para menos de esos días.
 
@@ -51,10 +51,13 @@ def coverage_limit(product_days: int | None, profile) -> tuple[int, str]:
 
 
 def expiry_level(days_to_expiry: int, limit: int) -> str | None:
-    """Crítica si faltan `limit` días o menos (o ya venció); advertencia si está un poco más lejos; si no, nada."""
-    if days_to_expiry <= limit:
+    """Crítica si faltan menos de `limit` días (o ya venció); advertencia si está un poco más lejos; si no, nada.
+
+    Igual que el stock mínimo, el límite es «menos de»: con un límite de 7 días, a los 7 todavía no es crítica.
+    """
+    if days_to_expiry < limit:
         return "critical"
-    if days_to_expiry <= limit + near_margin(limit):
+    if days_to_expiry < limit + near_margin(limit):
         return "warning"
     return None
 
