@@ -53,7 +53,6 @@ def test_an_empty_history_returns_zeroes_and_one_point_per_day(client, db):
     assert len(body["consumo_por_dia"]) == 30
     assert all(d["quantity"] == 0 for d in body["consumo_por_dia"])
     assert body["top_productos"] == []
-    assert body["productos_menos_usados"] == []
 
 
 def test_the_series_is_ordered_oldest_first_and_ends_today(client, db):
@@ -172,17 +171,54 @@ def test_the_ranking_is_ordered_by_quantity_descending(client, db):
     body = get_trends(client).json()
 
     assert [(p["nombre"], p["cantidad"]) for p in body["top_productos"]] == [("B", 5), ("C", 3), ("A", 1)]
-    assert body["productos_menos_usados"] == []  # con 5 o menos no hay "menos usados"
 
 
-def test_with_more_than_five_products_the_top_and_the_least_used_are_split(client, db):
+def test_the_ranking_has_at_most_five_products(client, db):
     for i in range(1, 8):
         add_event(db, make_product(db, f"P{i}"), i, today_utc())
 
     body = get_trends(client).json()
 
     assert [p["cantidad"] for p in body["top_productos"]] == [7, 6, 5, 4, 3]
-    assert [p["cantidad"] for p in body["productos_menos_usados"]] == [1, 2, 3, 4, 5]
+
+
+def test_there_is_no_list_of_least_used_products_any_more(client, db):
+    for i in range(1, 8):
+        add_event(db, make_product(db, f"P{i}"), i, today_utc())
+
+    assert "productos_menos_usados" not in get_trends(client).json()
+
+
+def test_the_lots_of_the_same_product_count_as_one_in_the_ranking(client, db):
+    # tres lotes de la misma leche (otro vencimiento cada uno) y otro producto
+    lotes = [make_product(db, "Leche Entera"), make_product(db, "Leche Entera"), make_product(db, "leche  entera")]
+    for product, qty in zip(lotes, [4, 2, 1]):
+        add_event(db, product, qty, today_utc())
+    add_event(db, make_product(db, "Pan"), 5, today_utc())
+
+    body = get_trends(client).json()
+
+    assert [(p["nombre"], p["cantidad"]) for p in body["top_productos"]] == [("Leche Entera", 7), ("Pan", 5)]
+    # lleva el id del lote que más se consumió
+    assert body["top_productos"][0]["product_id"] == lotes[0].id
+
+
+def test_five_distinct_products_even_when_one_of_them_has_many_lots(client, db):
+    for _ in range(4):
+        add_event(db, make_product(db, "Leche Entera"), 1, today_utc())
+    for i in range(1, 7):
+        add_event(db, make_product(db, f"P{i}"), 3, today_utc())
+
+    names = [p["nombre"] for p in get_trends(client).json()["top_productos"]]
+
+    assert len(names) == 5 and len(set(names)) == 5
+
+
+def test_two_products_with_the_same_amount_are_ordered_by_name(client, db):
+    for nombre in ["Zeta", "Alfa"]:
+        add_event(db, make_product(db, nombre), 3, today_utc())
+
+    assert [p["nombre"] for p in get_trends(client).json()["top_productos"]] == ["Alfa", "Zeta"]
 
 
 def test_a_deleted_product_is_shown_with_a_placeholder_name(client, db):
@@ -219,3 +255,14 @@ def test_an_aware_instant_is_assigned_to_its_utc_day():
 
 def test_a_naive_instant_is_taken_as_utc():
     assert _utc_day(datetime(2026, 10, 12, 23, 30)).isoformat() == "2026-10-12"
+
+
+def test_the_ranking_keeps_the_id_and_name_of_the_lot_that_was_consumed_the_most_even_if_it_came_later(client, db):
+    small = make_product(db, "Yogur")
+    big = make_product(db, "yogur")
+    add_event(db, small, 1, today_utc())
+    add_event(db, big, 5, today_utc())
+
+    top = get_trends(client).json()["top_productos"]
+
+    assert top == [{"product_id": big.id, "nombre": "yogur", "cantidad": 6}]

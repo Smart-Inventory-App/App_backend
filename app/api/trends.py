@@ -11,6 +11,9 @@ from app.schemas.trends import ConsumoPorDia, ProductoConsumo, TrendsResponse
 
 router = APIRouter(prefix="/trends", tags=["trends"])
 
+# Cuántos productos trae el ranking de los más consumidos
+TOP_PRODUCTS = 5
+
 
 def _utc_day(moment: datetime):
     """Día calendario UTC de un instante. Sin zona horaria se asume UTC."""
@@ -74,13 +77,19 @@ def get_trends(
             for p in db.query(Product.id, Product.nombre).filter(Product.id.in_(product_ids)).all()
         }
 
+    # Los lotes de un mismo producto (mismo nombre, con otro vencimiento o marca) cuentan como uno solo: el ranking
+    # nunca repite un producto
+    grouped: dict[str, dict] = {}
+    for pid, qty in per_product.items():
+        name = names.get(pid, f"Producto #{pid}")
+        entry = grouped.setdefault(" ".join(name.lower().split()), {"product_id": pid, "nombre": name, "best": qty, "cantidad": 0})
+        entry["cantidad"] += qty
+        if qty > entry["best"]:
+            entry.update(product_id=pid, nombre=name, best=qty)
+
     ranked = sorted(
-        (
-            ProductoConsumo(product_id=pid, nombre=names.get(pid, f"Producto #{pid}"), cantidad=qty)
-            for pid, qty in per_product.items()
-        ),
-        key=lambda p: p.cantidad,
-        reverse=True,
+        (ProductoConsumo(product_id=e["product_id"], nombre=e["nombre"], cantidad=e["cantidad"]) for e in grouped.values()),
+        key=lambda p: (-p.cantidad, p.nombre.lower()),
     )
 
     return TrendsResponse(
@@ -88,6 +97,5 @@ def get_trends(
         total_consumido=total_consumido,
         total_entradas=total_entradas,
         consumo_por_dia=consumo_por_dia,
-        top_productos=ranked[:5],
-        productos_menos_usados=list(reversed(ranked[-5:])) if len(ranked) > 5 else [],
+        top_productos=ranked[:TOP_PRODUCTS],
     )

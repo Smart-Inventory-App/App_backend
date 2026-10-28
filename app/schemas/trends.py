@@ -20,4 +20,3 @@ class TrendsResponse(BaseModel):
     total_entradas: int
     consumo_por_dia: List[ConsumoPorDia]
     top_productos: List[ProductoConsumo]
-    productos_menos_usados: List[ProductoConsumo]
