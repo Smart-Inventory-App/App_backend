@@ -11,12 +11,19 @@ from app.schemas.trends import ConsumoPorDia, ProductoConsumo, TrendsResponse
 
 router = APIRouter(prefix="/trends", tags=["trends"])
 
+# Cuántos productos trae el ranking de los más consumidos
+TOP_PRODUCTS = 5
 
-def _utc_day(moment: datetime):
-    """Día calendario UTC de un instante. Sin zona horaria se asume UTC."""
+
+# Hora argentina (UTC-3, sin horario de verano): los días del gráfico se cuentan con ella
+AR_TZ = timezone(timedelta(hours=-3))
+
+
+def _ar_day(moment: datetime):
+    """Día calendario argentino de un instante. Sin zona horaria se asume UTC (así se guardan los eventos)."""
     if moment.tzinfo is None:
-        return moment.date()
-    return moment.astimezone(timezone.utc).date()
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(AR_TZ).date()
 
 
 @router.get("/", response_model=TrendsResponse)
@@ -26,10 +33,10 @@ def get_trends(
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["sub"]
-    # Todo en UTC: el servidor puede estar en otra zona y los eventos se guardan en UTC.
-    today = datetime.now(timezone.utc).date()
+    # Los días son los de Argentina; el servidor puede estar en otra zona y los eventos se guardan en UTC.
+    today = datetime.now(AR_TZ).date()
     since = today - timedelta(days=period - 1)
-    since_start = datetime.combine(since, time.min, tzinfo=timezone.utc)
+    since_start = datetime.combine(since, time.min, tzinfo=AR_TZ)
 
     reversed_ids = db.query(ConsumptionEvent.reverses_event_id).filter(
         ConsumptionEvent.reverses_event_id.isnot(None)
@@ -52,7 +59,7 @@ def get_trends(
     for e in events:
         if e.event_type not in CONSUMPTION_EVENT_TYPES:
             continue
-        day = _utc_day(e.consumed_at).isoformat()
+        day = _ar_day(e.consumed_at).isoformat()
         per_day[day] = per_day.get(day, 0) + e.quantity
 
     consumo_por_dia = []
@@ -74,13 +81,19 @@ def get_trends(
             for p in db.query(Product.id, Product.nombre).filter(Product.id.in_(product_ids)).all()
         }
 
+    # Los lotes de un mismo producto (mismo nombre, con otro vencimiento o marca) cuentan como uno solo: el ranking
+    # nunca repite un producto
+    grouped: dict[str, dict] = {}
+    for pid, qty in per_product.items():
+        name = names.get(pid, f"Producto #{pid}")
+        entry = grouped.setdefault(" ".join(name.lower().split()), {"product_id": pid, "nombre": name, "best": qty, "cantidad": 0})
+        entry["cantidad"] += qty
+        if qty > entry["best"]:
+            entry.update(product_id=pid, nombre=name, best=qty)
+
     ranked = sorted(
-        (
-            ProductoConsumo(product_id=pid, nombre=names.get(pid, f"Producto #{pid}"), cantidad=qty)
-            for pid, qty in per_product.items()
-        ),
-        key=lambda p: p.cantidad,
-        reverse=True,
+        (ProductoConsumo(product_id=e["product_id"], nombre=e["nombre"], cantidad=e["cantidad"]) for e in grouped.values()),
+        key=lambda p: (-p.cantidad, p.nombre.lower()),
     )
 
     return TrendsResponse(
@@ -88,6 +101,5 @@ def get_trends(
         total_consumido=total_consumido,
         total_entradas=total_entradas,
         consumo_por_dia=consumo_por_dia,
-        top_productos=ranked[:5],
-        productos_menos_usados=list(reversed(ranked[-5:])) if len(ranked) > 5 else [],
+        top_productos=ranked[:TOP_PRODUCTS],
     )

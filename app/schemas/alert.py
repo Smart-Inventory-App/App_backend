@@ -13,6 +13,13 @@ class AlertResponse(BaseModel):
     level: str
     units_wasted: Optional[int] = None
     days_until_stockout: Optional[int] = None
+    suggested_qty: Optional[int] = None
+    # "rule": sale de una regla que configuró el usuario (días de anticipación del vencimiento, stock mínimo);
+    # "system": la genera el sistema a partir del consumo (ritmo lento, reposición sugerida)
+    origin: str = "system"
+    # La regla que se aplicó a esta alerta: cuántos días (vencimiento o stock mínimo) y si es la del producto o la general
+    limit_days: Optional[int] = None
+    rule_scope: Optional[str] = None
     image_url: Optional[str] = None
     product_name: Optional[str] = None
     product_stock: Optional[int] = None

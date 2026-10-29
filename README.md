@@ -26,8 +26,8 @@
 | PUT | `/products/{id}` | Actualizar producto |
 | DELETE | `/products/{id}` | Eliminar producto |
 | GET | `/products/changes` | Últimos cambios de stock (entradas, salidas y modificaciones), del más nuevo al más viejo |
-| GET | `/products/groups` | Buscar por nombre los productos agrupados (stock total de cada uno) |
-| GET | `/products/group` | Todos los productos con un mismo nombre y categoría, y su stock total |
+| GET | `/products/stock-total` | Suma del stock y cantidad de productos que cumplen los mismos filtros que `GET /products/` |
+| GET | `/products/match?q=` | Productos que se parecen a un texto leído de una etiqueta, comparado con el nombre, la marca y la descripción |
 
 **Filtros, orden y páginas en `GET /products/`:**
 
@@ -49,9 +49,11 @@ Cómo se ordena:
 
 La app muestra el inventario de a páginas: los primeros 20 productos con los filtros elegidos y, con «Cargar más», 10 más cada vez (`limit=20&offset=0`, después `limit=10&offset=20`, y así).
 
-**Stock total de un producto (`/products/groups` y `/products/group`).** «El mismo producto» es el que tiene igual nombre y categoría, sin distinguir mayúsculas, tildes ni espacios sobrantes; la marca no entra en la clave, ni nada de lo que cambia entre lotes (vencimiento, código de barras, ubicación, imagen). `/products/groups?q=` devuelve hasta 10 grupos cuyo nombre contiene `q`, cada uno con `stock_total`, `lotes` y `proximo_vencimiento`; `/products/group?nombre=&categoria=` devuelve el detalle con todos sus productos ordenados por vencimiento (los que no vencen, al final) y `404` si no existe.
+**Búsqueda por texto escaneado (`/products/match`).** A diferencia de `/products/suggest` (que busca dentro del nombre), compara el texto leído con el nombre, la marca y la descripción de cada producto del usuario, tolera abreviaturas y palabras de más, y devuelve hasta 10 productos de mejor a peor. El escaneo de etiquetas usa el mismo criterio para armar las coincidencias del borrador.
 
-**Últimos cambios (`/products/changes`).** Parámetros `limit` (1 a 50, default 5) y `offset`. Cada cambio trae el stock antes y después, que se reconstruye hacia atrás desde el stock actual con los movimientos del producto; las correcciones no aparecen, queda el movimiento corregido. Un producto con fecha de carga aporta además su entrada inicial.
+**Stock total (`/products/stock-total`).** Acepta los mismos filtros que el listado (`search` por nombre o marca, `categoria` y `ubicacion`) y devuelve `{ "stock_total": N, "products": M }` con la suma del stock y la cantidad de **todos** los productos que coinciden (no solo los de una página). La app lo muestra arriba del buscador del Inventario y lo vuelve a pedir cada vez que cambia la lista.
+
+**Últimos cambios (`/products/changes`).** Parámetros `limit` (1 a 50, default 5) y `offset`. Cada cambio trae el stock antes y después, que se reconstruye hacia atrás desde el stock actual con los movimientos del producto; el movimiento corregido sigue apareciendo y cada corrección o deshacer deja UNA sola entrada de «modificación» con el efecto neto (si una entrada de +15 que llevó el stock de 20 a 35 se edita a +13, aparece una modificación 35 → 33). Un producto con fecha de carga aporta además su entrada inicial.
 
 ### Schema de producto
 
@@ -135,11 +137,11 @@ Varios clientes escaneando simultáneamente no se bloquean entre sí: el worker 
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
-| GET | `/alerts/` | Todas las alertas del usuario |
-| GET | `/alerts/critical_alerts` | Solo las críticas |
-| GET | `/alerts/stock_alerts` | Solo las de stock bajo (`stock_low_coverage`) |
+| GET | `/alerts/` | Todas las alertas del usuario. Primero las que salen de sus reglas (`origin: "rule"`: `expiry` y `stock_low_coverage`) y después las del sistema (`origin: "system"`: `slow_pace`), las más graves primero en cada grupo. El nivel (`critical` o `warning`) se calcula al leer con la regla vigente (las dos reglas son «menos de»: con un límite de 7 días, a los 7 todavía no es crítica; «cerca» llega hasta la mitad del límite más allá, con un mínimo de 2 días), y cada alerta trae `limit_days` y `rule_scope` (`product` o `general`): qué regla se aplicó |
+| GET | `/alerts/critical_alerts` | Solo las críticas (con el nivel calculado al leer) |
+| GET | `/alerts/stock_alerts` | Las de stock mínimo (`stock_low_coverage`), que traen en la misma fila la reposición sugerida (`suggested_qty`: cuántas unidades comprar para volver a la cobertura configurada) |
 | GET | `/alerts/expiry_alerts` | Las de vencimiento y de ritmo lento (`expiry`, `slow_pace`) |
-| GET | `/alerts/summary` | Cantidad de alertas por nivel: `critical`, `warning`, `info` |
+| GET | `/alerts/summary` | Cantidad de alertas por nivel (`critical`, `warning`, `info`) y `total`, sacadas de la misma lista que ve el usuario; más `expiring` y `low_stock`: los productos con alertas de la opción «Vencimiento» (vencimiento y ritmo lento) y de la opción «Stock» del Centro de Alertas, de cualquier nivel y con las de predicción (los números del inicio de la app) |
 
 Cada alerta trae, además de su tipo, nivel y los datos del motivo (`days_until_stockout`, `units_wasted`), lo que la app necesita para mostrarla sin pedir el producto aparte: `product_name`, `image_url`, `product_stock` (un stock de `0` se devuelve como `0`, no como vacío), `product_expiry`, `product_category` y `product_brand`. La app los usa en la ventana «Detalle de Alerta» que se abre al tocar una entrada.
 
@@ -149,6 +151,9 @@ Cada alerta trae, además de su tipo, nivel y los datos del motivo (`days_until_
 |--------|----------|-------------|
 | GET | `/profile/` | Perfil del usuario (se crea con los valores por defecto si no existe) |
 | PUT | `/profile/` | Actualizar datos personales, tipo de cuenta y configuración de alertas |
+| GET | `/profile/username-available?username=` | Si el nombre de usuario se puede usar: `{"available": true/false}` (el nombre de la propia cuenta cuenta como disponible) |
+
+**Nombre de usuario único.** Como máximo una cuenta puede tener un nombre de usuario, sin distinguir mayúsculas ni espacios en los bordes. `PUT /profile/` responde `409` con `profile.username_taken` si otra cuenta ya lo tiene. La regla solo mira los **cambios**: una cuenta que ya tenía un nombre repetido (de antes de esta regla) puede seguir guardando su perfil sin tocarlo. No hay índice único en la base justamente para no fallar con esos duplicados, y no requiere migración.
 
 Límites que valida `PUT /profile/` (responde `422` si no se cumplen; son los mismos que aplica la app):
 

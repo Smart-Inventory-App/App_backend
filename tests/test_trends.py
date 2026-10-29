@@ -1,9 +1,9 @@
-"""`GET /trends/`: consumo agregado por día y ranking de productos, en UTC."""
+"""`GET /trends/`: consumo agregado por día y ranking de productos, en hora argentina."""
 from datetime import datetime, time, timedelta, timezone
 
 import pytest
 
-from app.api.trends import _utc_day
+from app.api.trends import _ar_day
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
 from tests.conftest import TEST_USER_ID
@@ -13,7 +13,8 @@ OTHER_USER_ID = "22222222-2222-4222-8222-222222222222"
 
 
 def today_utc():
-    return datetime.now(timezone.utc).date()
+    """Hoy según Argentina (UTC-3), que es el día con el que el endpoint arma el gráfico."""
+    return datetime.now(timezone(timedelta(hours=-3))).date()
 
 
 def at(day, hour=12):
@@ -53,7 +54,6 @@ def test_an_empty_history_returns_zeroes_and_one_point_per_day(client, db):
     assert len(body["consumo_por_dia"]) == 30
     assert all(d["quantity"] == 0 for d in body["consumo_por_dia"])
     assert body["top_productos"] == []
-    assert body["productos_menos_usados"] == []
 
 
 def test_the_series_is_ordered_oldest_first_and_ends_today(client, db):
@@ -172,17 +172,54 @@ def test_the_ranking_is_ordered_by_quantity_descending(client, db):
     body = get_trends(client).json()
 
     assert [(p["nombre"], p["cantidad"]) for p in body["top_productos"]] == [("B", 5), ("C", 3), ("A", 1)]
-    assert body["productos_menos_usados"] == []  # con 5 o menos no hay "menos usados"
 
 
-def test_with_more_than_five_products_the_top_and_the_least_used_are_split(client, db):
+def test_the_ranking_has_at_most_five_products(client, db):
     for i in range(1, 8):
         add_event(db, make_product(db, f"P{i}"), i, today_utc())
 
     body = get_trends(client).json()
 
     assert [p["cantidad"] for p in body["top_productos"]] == [7, 6, 5, 4, 3]
-    assert [p["cantidad"] for p in body["productos_menos_usados"]] == [1, 2, 3, 4, 5]
+
+
+def test_there_is_no_list_of_least_used_products_any_more(client, db):
+    for i in range(1, 8):
+        add_event(db, make_product(db, f"P{i}"), i, today_utc())
+
+    assert "productos_menos_usados" not in get_trends(client).json()
+
+
+def test_the_lots_of_the_same_product_count_as_one_in_the_ranking(client, db):
+    # tres lotes de la misma leche (otro vencimiento cada uno) y otro producto
+    lotes = [make_product(db, "Leche Entera"), make_product(db, "Leche Entera"), make_product(db, "leche  entera")]
+    for product, qty in zip(lotes, [4, 2, 1]):
+        add_event(db, product, qty, today_utc())
+    add_event(db, make_product(db, "Pan"), 5, today_utc())
+
+    body = get_trends(client).json()
+
+    assert [(p["nombre"], p["cantidad"]) for p in body["top_productos"]] == [("Leche Entera", 7), ("Pan", 5)]
+    # lleva el id del lote que más se consumió
+    assert body["top_productos"][0]["product_id"] == lotes[0].id
+
+
+def test_five_distinct_products_even_when_one_of_them_has_many_lots(client, db):
+    for _ in range(4):
+        add_event(db, make_product(db, "Leche Entera"), 1, today_utc())
+    for i in range(1, 7):
+        add_event(db, make_product(db, f"P{i}"), 3, today_utc())
+
+    names = [p["nombre"] for p in get_trends(client).json()["top_productos"]]
+
+    assert len(names) == 5 and len(set(names)) == 5
+
+
+def test_two_products_with_the_same_amount_are_ordered_by_name(client, db):
+    for nombre in ["Zeta", "Alfa"]:
+        add_event(db, make_product(db, nombre), 3, today_utc())
+
+    assert [p["nombre"] for p in get_trends(client).json()["top_productos"]] == ["Alfa", "Zeta"]
 
 
 def test_a_deleted_product_is_shown_with_a_placeholder_name(client, db):
@@ -208,14 +245,44 @@ def test_trends_require_a_token(client, db):
         app.dependency_overrides[get_current_user] = override
 
 
-# ── el día se calcula siempre en UTC ──────────────────────────────────────────
+# ── el día se calcula en hora argentina ───────────────────────────────────────
 
-def test_an_aware_instant_is_assigned_to_its_utc_day():
-    argentina = timezone(timedelta(hours=-3))
-    late_evening = datetime(2026, 10, 12, 23, 30, tzinfo=argentina)  # 02:30 UTC del 13
+def test_an_instant_is_assigned_to_its_argentine_day():
+    # 02:30 UTC del 13 son las 23:30 del 12 en Argentina
+    assert _ar_day(datetime(2026, 10, 13, 2, 30, tzinfo=timezone.utc)).isoformat() == "2026-10-12"
+    # 03:00 UTC ya es el 13 a las 00:00 argentinas
+    assert _ar_day(datetime(2026, 10, 13, 3, 0, tzinfo=timezone.utc)).isoformat() == "2026-10-13"
 
-    assert _utc_day(late_evening).isoformat() == "2026-10-13"
+
+def test_an_instant_in_another_zone_is_converted():
+    other = timezone(timedelta(hours=2))
+    assert _ar_day(datetime(2026, 10, 13, 1, 0, tzinfo=other)).isoformat() == "2026-10-12"
 
 
-def test_a_naive_instant_is_taken_as_utc():
-    assert _utc_day(datetime(2026, 10, 12, 23, 30)).isoformat() == "2026-10-12"
+def test_a_naive_instant_is_taken_as_utc_and_moved_to_argentina():
+    assert _ar_day(datetime(2026, 10, 12, 23, 30)).isoformat() == "2026-10-12"
+    assert _ar_day(datetime(2026, 10, 12, 1, 30)).isoformat() == "2026-10-11"
+
+
+def test_a_late_night_consumption_counts_on_the_argentine_day(client, db):
+    leche = make_product(db)
+    today = today_utc()
+    # 01:00 UTC de mañana = 22:00 de hoy en Argentina
+    add_event(db, leche, 4, today)
+    db.query(ConsumptionEvent).update({"consumed_at": datetime.combine(today + timedelta(days=1), time(1, 0))})
+    db.commit()
+
+    per_day = {d["day"]: d["quantity"] for d in get_trends(client, period=7).json()["consumo_por_dia"]}
+
+    assert per_day[today.isoformat()] == 4
+
+
+def test_the_ranking_keeps_the_id_and_name_of_the_lot_that_was_consumed_the_most_even_if_it_came_later(client, db):
+    small = make_product(db, "Yogur")
+    big = make_product(db, "yogur")
+    add_event(db, small, 1, today_utc())
+    add_event(db, big, 5, today_utc())
+
+    top = get_trends(client).json()["top_productos"]
+
+    assert top == [{"product_id": big.id, "nombre": "yogur", "cantidad": 6}]

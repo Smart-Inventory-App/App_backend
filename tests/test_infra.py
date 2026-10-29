@@ -86,6 +86,21 @@ async def test_notification_service_posts_the_payload_and_returns_the_status_cod
     }
 
 
+async def test_notification_service_sends_the_details_for_the_email_only_when_there_are():
+    service = NotificationService(api_url="http://notify:8010")
+
+    with respx.mock as router:
+        route = router.post(SEND_URL).mock(return_value=httpx.Response(200))
+        await service.send_notification(
+            "tok", "Titulo", "Cuerpo", "a@b.com", kind="slow_pace", product_name="Pan", days=4, units=0,
+        )
+
+    assert json.loads(route.calls.last.request.content) == {
+        "title": "Titulo", "body": "Cuerpo", "token": "tok", "email": "a@b.com",
+        "kind": "slow_pace", "product_name": "Pan", "days": 4, "units": 0,
+    }
+
+
 async def test_notification_service_swallows_network_errors_but_logs_them(caplog):
     service = NotificationService(api_url="http://notify:8010")
 

@@ -381,3 +381,16 @@ def test_with_several_lots_of_the_same_barcode_the_earliest_expiry_comes_first()
 
     assert [m.id for m in result.draft.coincidencias] == [3, 1, 2]
     assert result.draft.coincidencia_id == 3
+
+
+def test_label_is_matched_by_brand_and_description_too():
+    inventory = [product(1, nombre="Producto 7", marca="Ser", descripcion="Yogur entero sabor frutilla")]
+    result = ocr_draft.to_scan_result(ScanDocType.PRODUCT_LABEL, {
+        "fields": {
+            "nombre_producto": field("Yogur"),
+            "marca": field("Ser"),
+            "detalles": field("entero sabor frutilla"),
+        },
+    }, inventory=inventory)
+
+    assert [m.id for m in result.draft.coincidencias] == [1]
