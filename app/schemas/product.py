@@ -6,16 +6,20 @@ from app.core import barcode
 
 
 def _codigo_canonico(valor: Optional[str]) -> Optional[str]:
-    """Valida el código de barras y lo deja en su forma canónica.
+    """Valida el código de barras (solo números, de 8, 12, 13 o 14 dígitos) y lo deja en su forma canónica.
 
     Se hace en el schema y no en cada endpoint para que ningún camino de alta o
-    edición pueda saltearlo: un código que no cierra el dígito verificador —o un
-    UPC-A guardado sin normalizar— después no coincide con lo que lee el escáner,
-    y el producto deja de encontrarse por código. `CodigoInvalido` hereda de
+    edición pueda saltearlo: un UPC-A guardado sin normalizar después no coincide
+    con lo que lee el escáner, y el producto deja de encontrarse por código. `CodigoInvalido` hereda de
     `ValueError`, así que llega al cliente como un 422 más, igual que cualquier
     otro campo mal cargado.
     """
     return barcode.normalizar(valor)
+
+
+# Tope de los campos de reglas de alerta del producto: 7 dígitos para el stock mínimo y 3 para los días de anticipación
+STOCK_MINIMO_MAX = 9_999_999
+DIAS_ALERTA_VENCIMIENTO_MAX = 999
 
 
 class ProductCreate(BaseModel):
@@ -28,8 +32,8 @@ class ProductCreate(BaseModel):
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
     codigo_barras: Optional[str] = None
-    stock_minimo: Optional[int] = Field(None, gt=0)
-    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0)
+    stock_minimo: Optional[int] = Field(None, gt=0, le=STOCK_MINIMO_MAX)
+    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0, le=DIAS_ALERTA_VENCIMIENTO_MAX)
 
     _codigo_barras = field_validator("codigo_barras")(_codigo_canonico)
 
@@ -44,8 +48,8 @@ class ProductUpdate(BaseModel):
     imagen_url: Optional[str] = None
     ubicacion: Optional[str] = None
     codigo_barras: Optional[str] = None
-    stock_minimo: Optional[int] = Field(None, gt=0)
-    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0)
+    stock_minimo: Optional[int] = Field(None, gt=0, le=STOCK_MINIMO_MAX)
+    dias_alerta_vencimiento: Optional[int] = Field(None, gt=0, le=DIAS_ALERTA_VENCIMIENTO_MAX)
 
     _codigo_barras = field_validator("codigo_barras")(_codigo_canonico)
 
@@ -102,18 +106,11 @@ class ReposicionSuggestion(BaseModel):
     suggested_qty: int
 
 
-class ProductGroupSummary(BaseModel):
-    """Todos los productos con el mismo nombre y categoría (la marca puede variar), con su stock total."""
+class StockTotalResponse(BaseModel):
+    """Stock sumado de los productos que cumplen unos filtros, y cuántos son."""
 
-    nombre: str
-    categoria: str
     stock_total: int
-    lotes: int
-    proximo_vencimiento: Optional[date] = None
-
-
-class ProductGroupDetail(ProductGroupSummary):
-    productos: list[ProductResponse]
+    products: int
 
 
 class StockChange(BaseModel):

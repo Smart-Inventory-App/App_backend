@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,25 +11,26 @@ from sqlalchemy.orm import Session
 from typing import Literal, Optional
 
 from app.models.alert import Alert
-from app.core import barcode
+from app.core import barcode, matching
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.activity_log import AdminActivityLog
 from app.models.consumption import ConsumptionEvent
 from app.models.product import Product
+from app.services import alert_engine, alert_rules, alert_texts
+from app.services.restock import suggested_restock
 from app.models.profile import DEFAULT_COVERAGE_DAYS, DEFAULT_DIAS_ALERTA_VENCIMIENTO, DEFAULT_OVERSTOCK_DAYS, DEFAULT_USER_TYPE, UserProfile
 from app.models.user import AuthUser
 from app.schemas.product import (
     ProductCreate,
     ProductDefaults,
-    ProductGroupDetail,
-    ProductGroupSummary,
     ProductResponse,
     ProductSuggestion,
     ProductUpdate,
     ReposicionSuggestion,
     StockChange,
+    StockTotalResponse,
 )
 from app.services import ml_client
 from app.utils.sorting import alphabetical_key
@@ -137,78 +139,51 @@ def _get_user(user_id: str, db: Session) -> AuthUser:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
     return user
 
-def _create_alert(product: Product, alert_type: str, alert_level: str, db: Session, units_wasted: int, stockout_date: int) -> None:
-    alert = Alert(
-        user_id=UUID(product.user_id),
-        product_id=product.id,
-        type=alert_type,
-        level=alert_level,
-        units_wasted=units_wasted,
-        days_until_stockout=stockout_date
-    )
-    db.add(alert)
-    db.commit()
-    db.refresh(alert)
-    print(f"\n\nSe creó alerta de tipo '{alert_type}' y nivel '{alert_level}' para el producto '{product.nombre}'\n\n")
-
-def _delete_alert(product: Product, alert_type: str, db: Session) -> None:
-    db.query(Alert).filter(
-        Alert.user_id == UUID(product.user_id),
-        Alert.product_id == product.id,
-        Alert.type == alert_type,
-    ).delete()
-    db.commit()
-    print(f"\n\nSe eliminó alerta de tipo '{alert_type}' para el producto '{product.nombre}'\n\n")
-
-def _clear_alert(product: Product, alert_type: str, current_alerts: list[Alert], db: Session) -> None:
-    """Borra la alerta de ese tipo si existe: la condición que la generó ya no se cumple.
-
-    Sin esto una alerta nacía y no se iba nunca: reponer un producto con «stock
-    crítico» lo dejaba marcado como crítico con 200 unidades en la alacena.
-    """
-    if any(alert.type == alert_type for alert in current_alerts):
-        _delete_alert(product, alert_type, db)
-
-
-async def _notificate_low_coverage(token: str, product: Product, days: int, user_email: str):
-    label = "día" if days == 1 else "días"
+async def _notificate_low_coverage(token: str, product: Product, days: int, user_email: str, limit_days=None, daily_rate=None):
     await notification_service.send_notification(
         token,
         "Stock por agotarse",
-        f"{product.nombre} se agotará en aproximadamente {days} {label}.",
-        user_email
+        alert_texts.low_coverage_body(product.nombre, days),
+        user_email,
+        kind="low_coverage", product_name=product.nombre, days=days, limit_days=limit_days, daily_rate=daily_rate,
     )
 
-async def _notificate_overstock(token: str, product: Product, days: int, user_email: str):
+async def _notificate_overstock(token: str, product: Product, days: int, user_email: str, limit_days=None, daily_rate=None):
+    limit = limit_days or DEFAULT_COVERAGE_DAYS
     await notification_service.send_notification(
         token,
         "Compraste más de lo necesario",
-        f"Tenés {product.nombre} para aproximadamente {days} días. Quizás compraste de más.",
-        user_email
+        alert_texts.overstock_body(product.nombre, days, limit),
+        user_email,
+        kind="overstock", product_name=product.nombre, days=days, limit_days=limit, daily_rate=daily_rate,
     )
 
-async def _notificate_understock(token: str, product: Product, days: int, user_email: str):
+async def _notificate_understock(token: str, product: Product, days: int, user_email: str, limit_days=None, daily_rate=None):
+    limit = limit_days or DEFAULT_COVERAGE_DAYS
     await notification_service.send_notification(
         token,
         "Compraste menos de lo necesario",
-        f"Aun con la compra, {product.nombre} te alcanza solo para {days} días. Considerá comprar más.",
-        user_email
+        alert_texts.understock_body(product.nombre, days, limit),
+        user_email,
+        kind="understock", product_name=product.nombre, days=days, limit_days=limit, daily_rate=daily_rate,
     )
 
 async def _notificate_slow_pace(token: str, product: Product, days_until_expiry: int, units_wasted: int, user_email: str):
     await notification_service.send_notification(
         token,
         "Riesgo de vencimiento por bajo consumo",
-        f"Al ritmo actual, {units_wasted} unidad{'es' if units_wasted != 1 else ''} de {product.nombre} vencer{'án' if units_wasted != 1 else 'á'} en {days_until_expiry} días.",
-        user_email
+        alert_texts.slow_pace_body(product.nombre, units_wasted, days_until_expiry),
+        user_email,
+        kind="slow_pace", product_name=product.nombre, days=days_until_expiry, units=units_wasted,
     )
 
-async def _notificate_expirancy(token: str, product: Product, expirancy_days: int, user_email: str):
+async def _notificate_expirancy(token: str, product: Product, expirancy_days: int, user_email: str, limit_days=None):
     await notification_service.send_notification(
         token,
         "Producto próximo a vencerse",
-        f"El producto {product.nombre} vence en {expirancy_days} días.",
-        user_email
+        alert_texts.expiry_body(product.nombre, expirancy_days),
+        user_email,
+        kind="expiry", product_name=product.nombre, days=expirancy_days, limit_days=limit_days,
     )
 
 async def _check_product_state(
@@ -218,33 +193,25 @@ async def _check_product_state(
     """
     Evalúa el estado de un producto y envía alertas según corresponda.
     Retorna el resultado ML (daily_rate, days_until_stockout, stage) o None.
+
+    Los límites y los niveles salen de `alert_rules`, los mismos que usan el job y la lectura de alertas.
     """
-    # Alerta de vencimiento (estática — no requiere ML). El producto puede
-    # tener su propia regla; si no, se usa la del perfil del usuario.
-    expirancy_warning = (
-        product.dias_alerta_vencimiento or profile.dias_alerta_vencimiento or DEFAULT_DIAS_ALERTA_VENCIMIENTO
-    )
-    product_alerts = db.query(Alert).filter(Alert.product_id == product.id).all()
-    if product.vencimiento is not None:
-        expirancy_days = (product.vencimiento - date.today()).days
-        expiry_alerts = [alert for alert in product_alerts if alert.type == "expiry"]
-        if expiry_alerts:
-            alert = expiry_alerts[0]
-            if expirancy_days > expirancy_warning:
-                _delete_alert(product, "expiry", db)
-            elif alert.level == "warning" and expirancy_days <= 1:
-                alert.level = "critical"
-                db.commit()
-                db.refresh(alert)
-                print(f"\n\nSe actualizó alerta de tipo 'expiry' a nivel 'critical' para el producto '{product.nombre}'\n\n")
-                await _notificate_expirancy(user.firebase_token, product, expirancy_days, user.email)
-        elif expirancy_days < expirancy_warning:
-            _create_alert(product, "expiry", "warning" if expirancy_days > 1 else "critical", db, None, None)
-            await _notificate_expirancy(user.firebase_token, product, expirancy_days, user.email)
+    existing = db.query(Alert).filter(Alert.product_id == product.id).all()
+
+    # Alerta de vencimiento (estática — no requiere ML). El producto puede tener su propia regla; si no, se usa la
+    # del perfil del usuario.
+    expiry_days = alert_engine.sync_product_expiry(db, product, profile, existing)
+    if expiry_days is not None:
+        limit, _ = alert_rules.expiry_limit(product.dias_alerta_vencimiento, profile)
+        await _notificate_expirancy(user.firebase_token, product, expiry_days, user.email, limit_days=limit)
+
+    # Sin stock no hay nada que agotar ni que se pueda vencer
+    if product.stock <= 0:
+        alert_engine.clear_alerts(db, existing, "stock_low_coverage", "slow_pace", *alert_engine.LEGACY_TYPES)
+        return None
 
     if not settings.ML_SERVICE_URL:
         return None
-    coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
     segment = profile.user_type or DEFAULT_USER_TYPE
     events = (
         db.query(ConsumptionEvent)
@@ -267,7 +234,7 @@ async def _check_product_state(
     # evaluación (DB, notificaciones): una falla acá no debe tumbar el alta o la
     # edición del producto que la disparó, que ya quedó guardado.
     try:
-        await _apply_ml_alerts(product, user, db, product_alerts, result, coverage_threshold, stock_increased)
+        await _apply_ml_alerts(product, user, db, existing, result, profile, stock_increased)
     except Exception:
         logger.exception("No se pudieron evaluar las alertas de ML del producto %s", product.id)
         db.rollback()
@@ -277,44 +244,36 @@ async def _check_product_state(
 
 
 async def _apply_ml_alerts(
-    product: Product, user: AuthUser, db: Session, product_alerts: list[Alert],
-    result: dict, coverage_threshold: int, stock_increased: bool,
+    product: Product, user: AuthUser, db: Session, existing: list[Alert],
+    result: dict, profile: UserProfile, stock_increased: bool,
 ) -> None:
-    """Crea o limpia las alertas de cobertura baja y ritmo lento según la predicción."""
-    days_until_stockout = result.get("days_until_stockout")
+    """Deja las alertas del modelo predictivo (stock mínimo con reposición sugerida, y ritmo lento) según la predicción."""
+    days_until_stockout = alert_rules.whole_days(result.get("days_until_stockout"))
     daily_rate = result.get("daily_rate")
 
-    # Alerta de bajo stock — se suprime en restock porque el caller
-    # decide entre "compraste de más" o "compraste de menos"
-    low_coverage = days_until_stockout is not None and days_until_stockout < coverage_threshold
-    if low_coverage:
-        if not stock_increased:
-            _delete_alert(product, "stock_low_coverage", db)
-            _create_alert(product, "stock_low_coverage", "warning" if days_until_stockout > 1 else "critical", db, None, days_until_stockout)
-            await _notificate_low_coverage(user.firebase_token, product, days_until_stockout, user.email)
-    else:
-        # La cobertura se recuperó (p. ej. repusieron stock): la alerta ya no corresponde.
-        _clear_alert(product, "stock_low_coverage", product_alerts, db)
+    # Alerta de stock mínimo: se crea o actualiza siempre. Se avisa solo si es crítica y no se acaba de reponer (al
+    # reponer, el aviso lo da el de «compraste de menos o de más»)
+    level, _ = alert_engine.apply_coverage(db, product, profile, existing, days_until_stockout, daily_rate)
+    if level == "critical" and not stock_increased:
+        limit, _ = alert_rules.coverage_limit(product.stock_minimo, profile)
+        await _notificate_low_coverage(
+            user.firebase_token, product, days_until_stockout, user.email, limit_days=limit, daily_rate=daily_rate,
+        )
 
     # Alerta de ritmo lento vs. vencimiento
-    slow_pace_risk = False
+    units_wasted = None
+    days_until_expiry = None
     if (
         product.vencimiento is not None
         and days_until_stockout is not None
         and daily_rate is not None
         and daily_rate > 0
     ):
-        days_until_expiry = (product.vencimiento - date.today()).days
+        days_until_expiry = alert_rules.days_until(product.vencimiento)
         if 0 < days_until_expiry < days_until_stockout:
             units_wasted = max(0, product.stock - int(daily_rate * days_until_expiry))
-            if units_wasted > 0:
-                slow_pace_risk = True
-                _delete_alert(product, "slow_pace", db)
-                _create_alert(product, "slow_pace", "warning", db, units_wasted, None)
-                await _notificate_slow_pace(user.firebase_token, product, days_until_expiry, units_wasted, user.email)
-    if not slow_pace_risk:
-        # Cambió el vencimiento, el ritmo de consumo o el stock: ya no se va a desperdiciar nada.
-        _clear_alert(product, "slow_pace", product_alerts, db)
+    if alert_engine.apply_slow_pace(db, product, profile, existing, days_until_expiry, units_wasted):
+        await _notificate_slow_pace(user.firebase_token, product, days_until_expiry, units_wasted, user.email)
 
 
 
@@ -324,6 +283,41 @@ SORTABLE_FIELDS = {
     "vencimiento": Product.vencimiento,
     "categoria": Product.categoria,
 }
+
+
+def _filter_products(query, search: Optional[str], categoria: Optional[str], ubicacion: Optional[str]):
+    """Los filtros del inventario: el texto busca en el nombre y en la marca; categoría y ubicación son exactas.
+
+    Los comparten el listado y el stock total, así el total siempre es el de los productos que se ven en la lista.
+    """
+    if search:
+        term = f"%{search}%"
+        query = query.filter(Product.nombre.ilike(term) | Product.marca.ilike(term))
+    if categoria:
+        query = query.filter(Product.categoria.ilike(categoria))
+    if ubicacion:
+        query = query.filter(Product.ubicacion.ilike(ubicacion))
+    return query
+
+
+@router.get("/stock-total", response_model=StockTotalResponse)
+async def stock_total(
+    search: Optional[str] = Query(None),
+    categoria: Optional[str] = Query(None),
+    ubicacion: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """La suma del stock y la cantidad de productos del usuario que cumplen los filtros del inventario.
+
+    Son todos los que coinciden, no solo los de la página que se ve en la app.
+    """
+    query = _filter_products(
+        db.query(func.coalesce(func.sum(Product.stock), 0), func.count(Product.id)).filter(Product.user_id == current_user["sub"]),
+        search, categoria, ubicacion,
+    )
+    total, count = query.one()
+    return StockTotalResponse(stock_total=int(total), products=int(count))
 
 
 @router.get("/", response_model=list[ProductResponse])
@@ -340,16 +334,7 @@ async def list_products(
 ):
     """Productos del usuario, con filtros y orden. Sin `limit` trae todos; con `limit` y `offset` trae una página."""
     user_id = current_user["sub"]
-    query = db.query(Product).filter(Product.user_id == user_id)
-    if search:
-        term = f"%{search}%"
-        query = query.filter(
-            Product.nombre.ilike(term) | Product.marca.ilike(term)
-        )
-    if categoria:
-        query = query.filter(Product.categoria.ilike(categoria))
-    if ubicacion:
-        query = query.filter(Product.ubicacion.ilike(ubicacion))
+    query = _filter_products(db.query(Product).filter(Product.user_id == user_id), search, categoria, ubicacion)
     page_end = offset + limit if limit is not None else None
     if sort_by == "nombre":
         # Orden alfabético real, sin distinguir mayúsculas ni tildes (la base ordenaría las mayúsculas primero)
@@ -415,45 +400,61 @@ def _to_suggestion(p: Product) -> ProductSuggestion:
     )
 
 
-def _group_key(nombre: str, categoria: str) -> tuple[str, str]:
-    """Qué cuenta como "el mismo producto" para el stock total: igual nombre y categoría, sin distinguir
-    mayúsculas, tildes ni espacios sobrantes.
-
-    La marca no entra en la clave, ni nada de lo que cambia entre lotes (vencimiento, código de barras,
-    ubicación, imagen, stock).
-    """
-
-    def norm(text: Optional[str]) -> str:
-        return alphabetical_key(" ".join((text or "").split()))
-
-    return (norm(nombre), norm(categoria))
-
-
-def _user_groups(user_id: str, db: Session) -> dict[tuple[str, str], list[Product]]:
-    groups: dict[tuple[str, str], list[Product]] = {}
-    products = db.query(Product).filter(Product.user_id == user_id).order_by(Product.id.asc()).all()
-    for product in products:
-        groups.setdefault(_group_key(product.nombre, product.categoria), []).append(product)
-    return groups
-
-
-def _summarize_group(lots: list[Product]) -> ProductGroupSummary:
-    first = lots[0]
-    expiries = [p.vencimiento for p in lots if p.stock > 0 and p.vencimiento]
-    return ProductGroupSummary(
-        nombre=first.nombre,
-        categoria=first.categoria,
-        stock_total=sum(p.stock for p in lots),
-        lotes=len(lots),
-        proximo_vencimiento=min(expiries) if expiries else None,
-    )
-
-
 def _naive_utc(value: datetime) -> datetime:
     """Los instantes se comparan sin zona (en UTC): la base devuelve unos con zona y otros sin ella."""
     if value.tzinfo is not None:
         return value.astimezone(timezone.utc).replace(tzinfo=None)
     return value
+
+
+# Las notas automáticas de las correcciones dicen cuándo se hizo el registro que corrigen (hora argentina), no su número
+AR_TZ = timezone(timedelta(hours=-3))
+_LEGACY_NOTE = re.compile(r"^(Corrección: revierte|Deshecho: revierte|Corrige) el registro #(\d+)(?: \(antes:.*\))?$")
+
+
+def _event_stamp(moment: datetime) -> str:
+    """«28/10/2026 15:29», en hora argentina."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(AR_TZ).strftime("%d/%m/%Y %H:%M")
+
+
+def _clean_note(note, by_id: dict):
+    """Las notas viejas mencionaban «el registro #43» y «(antes: ...)»: se muestran con la fecha del registro."""
+    match = _LEGACY_NOTE.match(note or "")
+    if not match:
+        return note
+    verb = "Deshace" if match.group(1).startswith("Deshecho") else "Corrige"
+    target = by_id.get(int(match.group(2)))
+    return f"{verb} el registro del {_event_stamp(target.consumed_at)}" if target else f"{verb} un registro anterior"
+
+
+def _check_same_direction(event, new_event_type: str) -> None:
+    """Una entrada sigue siendo entrada y una salida sigue siendo salida: solo cambian las unidades (y el motivo de la salida)."""
+    if (event.event_type == "restocked") != (new_event_type == "restocked"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Una entrada no puede pasar a ser una salida, ni una salida una entrada",
+        )
+
+
+def _correction_companion(reversal, by_id: dict):
+    """Al corregir un registro se guardan, juntos, la reversión y el movimiento nuevo (el que sigue y es del mismo instante).
+    Al deshacer no hay movimiento nuevo."""
+    following = by_id.get(reversal.id + 1)
+    if (
+        following is not None
+        and following.reverses_event_id is None
+        and following.product_id == reversal.product_id
+        and _naive_utc(following.consumed_at) == _naive_utc(reversal.consumed_at)
+    ):
+        return following
+    return None
+
+
+def _is_correction_companion(event, by_id: dict) -> bool:
+    previous = by_id.get(event.id - 1)
+    return previous is not None and previous.reverses_event_id is not None and _correction_companion(previous, by_id) is event
 
 
 @router.get("/changes", response_model=list[StockChange])
@@ -479,7 +480,8 @@ async def recent_stock_changes(
         .order_by(ConsumptionEvent.consumed_at.desc(), ConsumptionEvent.id.desc())
         .all()
     )
-    reversed_ids = {e.reverses_event_id for e in events if e.reverses_event_id is not None}
+    by_id = {e.id: e for e in events}
+    after_of: dict[int, int] = {}
 
     running = {product_id: product.stock for product_id, product in products.items()}
     changes: list[tuple[tuple[datetime, int], StockChange]] = []
@@ -490,7 +492,22 @@ async def recent_stock_changes(
         after = running[product.id]
         before = after - _stock_effect(event.event_type, event.quantity)
         running[product.id] = before
-        if event.reverses_event_id is not None or event.id in reversed_ids:
+        after_of[event.id] = after
+        producto = ProductResponse.model_validate(product, from_attributes=True)
+        if event.reverses_event_id is not None:
+            # Una corrección o un deshacer deja UNA entrada de «modificación» con el efecto neto (35 → 33), y el movimiento
+            # corregido sigue apareciendo con su stock de entonces (20 → 35)
+            companion = _correction_companion(event, by_id)
+            final_after = after_of[companion.id] if companion is not None else after
+            changes.append((
+                (_naive_utc(event.consumed_at), 1 + (companion.id if companion is not None else event.id)),
+                StockChange(
+                    id=f"event-{event.id}", kind="modificacion", stock_before=before, stock_after=final_after,
+                    quantity=abs(final_after - before), occurred_at=event.consumed_at, producto=producto,
+                ),
+            ))
+            continue
+        if _is_correction_companion(event, by_id):
             continue
         if (event.note or "").startswith(STOCK_EDIT_NOTE):
             kind = "modificacion"
@@ -499,13 +516,8 @@ async def recent_stock_changes(
         changes.append((
             (_naive_utc(event.consumed_at), 1 + event.id),
             StockChange(
-                id=f"event-{event.id}",
-                kind=kind,
-                stock_before=before,
-                stock_after=after,
-                quantity=event.quantity,
-                occurred_at=event.consumed_at,
-                producto=ProductResponse.model_validate(product, from_attributes=True),
+                id=f"event-{event.id}", kind=kind, stock_before=before, stock_after=after, quantity=event.quantity,
+                occurred_at=event.consumed_at, producto=producto,
             ),
         ))
 
@@ -531,50 +543,6 @@ async def recent_stock_changes(
     return [change for _, change in changes[offset:offset + limit]]
 
 
-@router.get("/groups", response_model=list[ProductGroupSummary])
-async def search_product_groups(
-    q: str = Query(..., min_length=1),
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Productos del usuario agrupados por nombre y categoría, cuyo nombre contiene `q`.
-
-    La búsqueda no distingue mayúsculas ni tildes. Cada grupo trae el stock sumado de todos sus lotes.
-    """
-    needle = alphabetical_key(" ".join(q.split()))
-    if not needle:
-        return []
-    groups = [
-        _summarize_group(lots)
-        for key, lots in _user_groups(current_user["sub"], db).items()
-        if needle in key[0]
-    ]
-    groups.sort(key=lambda g: (alphabetical_key(g.nombre), alphabetical_key(g.categoria)))
-    return groups[:10]
-
-
-@router.get("/group", response_model=ProductGroupDetail)
-async def get_product_group(
-    nombre: str = Query(..., min_length=1),
-    categoria: str = Query(..., min_length=1),
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Todos los productos del usuario con ese nombre y categoría (de cualquier marca), y su stock total.
-
-    Salen ordenados por vencimiento (los que no vencen, al final).
-    """
-    lots = _user_groups(current_user["sub"], db).get(_group_key(nombre, categoria))
-    if not lots:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Producto no encontrado")
-    summary = _summarize_group(lots)
-    ordered = sorted(lots, key=lambda p: (p.vencimiento is None, p.vencimiento or date.max, p.id))
-    return ProductGroupDetail(
-        **summary.model_dump(),
-        productos=[ProductResponse.model_validate(p, from_attributes=True) for p in ordered],
-    )
-
-
 @router.get("/suggest", response_model=list[ProductSuggestion])
 async def suggest_products(
     q: str = Query(..., min_length=1),
@@ -590,6 +558,21 @@ async def suggest_products(
         .all()
     )
     return [_to_suggestion(p) for p in rows]
+
+
+@router.get("/match", response_model=list[ProductSuggestion])
+async def match_products(
+    q: str = Query(..., min_length=1, max_length=1000),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Los productos del usuario que se parecen a un texto leído de una etiqueta, de mejor a peor.
+
+    A diferencia de `/suggest` (que busca dentro del nombre), compara el texto con el nombre, la marca y la
+    descripción de cada producto, y tolera abreviaturas y palabras de más.
+    """
+    rows = db.query(Product).filter(Product.user_id == current_user["sub"]).all()
+    return [_to_suggestion(p) for p, _ in matching.buscar_texto(q, rows)]
 
 
 @router.get("/by-barcode/{codigo}", response_model=Optional[ProductSuggestion])
@@ -706,9 +689,9 @@ async def create_product(
             coverage_threshold = existing.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
             overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
             if days_until_stockout is not None and days_until_stockout > overstock_threshold:
-                await _notificate_overstock(user.firebase_token, existing, days_until_stockout, user.email)
+                await _notificate_overstock(user.firebase_token, existing, days_until_stockout, user.email, limit_days=coverage_threshold, daily_rate=result.get("daily_rate"))
             elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
-                await _notificate_understock(user.firebase_token, existing, days_until_stockout, user.email)
+                await _notificate_understock(user.firebase_token, existing, days_until_stockout, user.email, limit_days=coverage_threshold, daily_rate=result.get("daily_rate"))
         return ProductResponse.model_validate(existing, from_attributes=True).model_copy(update={"merged": True})
 
     product = Product(user_id=user_id, **data.model_dump())
@@ -786,7 +769,7 @@ async def get_reposicion_sugerida(
         if days_until_stockout >= coverage_threshold:
             continue
 
-        suggested_qty = max(0, round(daily_rate * coverage_threshold) - product.stock)
+        suggested_qty = suggested_restock(daily_rate, coverage_threshold, product.stock)
         if suggested_qty <= 0:
             continue
 
@@ -878,9 +861,9 @@ async def update_product(
         coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
         overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
         if days_until_stockout is not None and days_until_stockout > overstock_threshold:
-            await _notificate_overstock(user.firebase_token, product, days_until_stockout, user.email)
+            await _notificate_overstock(user.firebase_token, product, days_until_stockout, user.email, limit_days=coverage_threshold, daily_rate=result.get("daily_rate"))
         elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
-            await _notificate_understock(user.firebase_token, product, days_until_stockout, user.email)
+            await _notificate_understock(user.firebase_token, product, days_until_stockout, user.email, limit_days=coverage_threshold, daily_rate=result.get("daily_rate"))
 
     db.commit()
     db.refresh(product)
@@ -906,13 +889,14 @@ async def get_consumption_history(
         .all()
     )
     reversed_ids = {e.reverses_event_id for e in events if e.reverses_event_id is not None}
+    by_id = {e.id: e for e in events}
     return [
         {
             "id": e.id,
             "quantity": e.quantity,
             "event_type": e.event_type,
             "consumed_at": e.consumed_at,
-            "note": e.note,
+            "note": _clean_note(e.note, by_id),
             "actor_email": e.actor_email,
             "reverses_event_id": e.reverses_event_id,
             "reversed": e.id in reversed_ids,
@@ -991,9 +975,9 @@ async def restock_product(
         coverage_threshold = product.stock_minimo or profile.stock_minimo or DEFAULT_COVERAGE_DAYS
         overstock_threshold = max(DEFAULT_OVERSTOCK_DAYS, 4 * coverage_threshold)
         if days_until_stockout is not None and days_until_stockout > overstock_threshold:
-            await _notificate_overstock(user.firebase_token, product, days_until_stockout, user.email)
+            await _notificate_overstock(user.firebase_token, product, days_until_stockout, user.email, limit_days=coverage_threshold, daily_rate=result.get("daily_rate"))
         elif days_until_stockout is not None and days_until_stockout < coverage_threshold:
-            await _notificate_understock(user.firebase_token, product, days_until_stockout, user.email)
+            await _notificate_understock(user.firebase_token, product, days_until_stockout, user.email, limit_days=coverage_threshold, daily_rate=result.get("daily_rate"))
     return ProductResponse.model_validate(product, from_attributes=True).model_copy(update={"merged": True})
 
 
@@ -1032,6 +1016,7 @@ async def update_consumption_event(
     actor_email = current_user.get("email")
     product = _get_user_product(product_id, user_id, db)
     event = _get_own_consumption_event(product_id, event_id, db)
+    _check_same_direction(event, data.event_type)
 
     new_stock = (
         product.stock
@@ -1051,7 +1036,7 @@ async def update_consumption_event(
         quantity=event.quantity,
         event_type=reversal_type,
         actor_email=actor_email,
-        note=f"Corrección: revierte el registro #{event.id}",
+        note=f"Corrige el registro del {_event_stamp(event.consumed_at)}",
         reverses_event_id=event.id,
     ))
     new_event = ConsumptionEvent(
@@ -1060,7 +1045,7 @@ async def update_consumption_event(
         quantity=data.quantity,
         event_type=data.event_type,
         actor_email=actor_email,
-        note=data.note or f"Corrige el registro #{event.id} (antes: {event.quantity} {event.event_type})",
+        note=data.note or f"Corrige el registro del {_event_stamp(event.consumed_at)}",
     )
     db.add(new_event)
     product.stock = new_stock
@@ -1106,7 +1091,7 @@ async def delete_consumption_event(
         quantity=quantity,
         event_type=reversal_type,
         actor_email=actor_email,
-        note=f"Deshecho: revierte el registro #{event.id}",
+        note=f"Deshace el registro del {_event_stamp(event.consumed_at)}",
         reverses_event_id=event.id,
     ))
     product.stock = new_stock

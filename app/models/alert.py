@@ -14,3 +14,5 @@ class Alert(Base):
     level = Column(String(50), nullable=False)
     units_wasted = Column(Integer, nullable=True)
     days_until_stockout = Column(Integer, nullable=True)
+    # Solo en las alertas de reposición: cuántas unidades conviene comprar
+    suggested_qty = Column(Integer, nullable=True)

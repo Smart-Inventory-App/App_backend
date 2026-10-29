@@ -25,7 +25,10 @@ class NotificationService:
     def __init__(self, api_url):
         self.api_url = api_url
 
-    async def send_notification(self, user_token, title, body, user_email):
+    async def send_notification(
+        self, user_token, title, body, user_email,
+        kind=None, product_name=None, days=None, units=None, limit_days=None, daily_rate=None,
+    ):
         """Pide el envío de un push y un email. Devuelve el status HTTP, o None si no hubo respuesta.
 
         Es asíncrono a propósito: se llama desde handlers `async` y desde el job
@@ -39,6 +42,13 @@ class NotificationService:
             "token": user_token,
             "email": user_email,
         }
+        # Datos para que el mail explique el aviso (qué significa y qué hacer). Se mandan solo si hay: sin ellos el
+        # servicio arma un mail simple con el título y el mensaje.
+        extras = {
+            "kind": kind, "product_name": product_name, "days": days, "units": units,
+            "limit_days": limit_days, "daily_rate": daily_rate,
+        }
+        payload.update({key: value for key, value in extras.items() if value is not None})
         url = notification_url(self.api_url)
         try:
             async with httpx.AsyncClient(timeout=SEND_TIMEOUT_SECONDS) as client:

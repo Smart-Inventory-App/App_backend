@@ -68,8 +68,8 @@ def notifications(monkeypatch):
     """
     sent = []
 
-    async def fake_send(token, title, body, email):
-        sent.append({"token": token, "title": title, "body": body, "email": email})
+    async def fake_send(token, title, body, email, **extra):
+        sent.append({"token": token, "title": title, "body": body, "email": email, **extra})
         return 200
 
     monkeypatch.setattr(products_api.notification_service, "send_notification", fake_send)

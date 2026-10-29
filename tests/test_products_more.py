@@ -76,6 +76,33 @@ def test_suggest_products_matches_a_partial_name(client, db, no_alerts):
     assert [p["nombre"] for p in resp.json()] == ["Yogur Ser"]
 
 
+def test_match_products_compares_the_text_with_name_brand_and_description(client, db, no_alerts):
+    add_product(db, nombre="Cremoso", marca="La Serenisima")
+    add_product(db, nombre="Producto 7", descripcion="Aceite de girasol alto oleico")
+    add_product(db, nombre="Detergente")
+
+    por_marca = client.get("/products/match", params={"q": "la serenisima queso untable"}, headers=AUTH)
+    por_descripcion = client.get("/products/match", params={"q": "aceite girasol alto oleico"}, headers=AUTH)
+
+    assert [p["nombre"] for p in por_marca.json()] == ["Cremoso"]
+    assert [p["nombre"] for p in por_descripcion.json()] == ["Producto 7"]
+
+
+def test_match_products_only_returns_the_products_of_the_user(client, db, no_alerts):
+    add_product(db, nombre="Yogur Ser")
+    add_product(db, nombre="Yogur Ser", user_id="00000000-0000-0000-0000-000000000000")
+
+    resp = client.get("/products/match", params={"q": "yogur ser"}, headers=AUTH)
+
+    assert len(resp.json()) == 1
+
+
+def test_match_products_with_no_similar_product_is_empty(client, db, no_alerts):
+    add_product(db, nombre="Detergente")
+
+    assert client.get("/products/match", params={"q": "yogur"}, headers=AUTH).json() == []
+
+
 # ── código de barras: caso "no hay código" ────────────────────────────────────
 
 def test_by_barcode_with_a_blank_code_returns_null_not_422(client, db):
@@ -384,7 +411,7 @@ def test_restock_checks_the_alerts_of_the_product(client, db, monkeypatch):
 
     sent = []
 
-    async def understock(token, product, days, email):
+    async def understock(token, product, days, email, **extra):
         sent.append(days)
 
     monkeypatch.setattr(products_api, "_check_product_state", record)
@@ -404,7 +431,7 @@ def test_restock_notifies_when_the_new_stock_is_too_much(client, db, monkeypatch
 
     sent = []
 
-    async def overstock(token, product, days, email):
+    async def overstock(token, product, days, email, **extra):
         sent.append(days)
 
     monkeypatch.setattr(products_api, "_check_product_state", far)
@@ -633,159 +660,77 @@ def test_the_pages_only_have_the_users_own_products(client, db, no_alerts):
     assert "Ajeno" not in names(client, limit=50)
 
 
-# ── stock total de un mismo producto (mismo nombre y categoría) ───────────────
+# ── stock total del inventario (con los mismos filtros que la lista) ───────────
 
-def lots(db):
-    """Tres lotes de la misma leche, una leche de otra marca (que también cuenta) y productos que no son lo mismo."""
-    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=4, vencimiento=date(2027, 3, 1), ubicacion="Heladera")
-    add_product(db, nombre="leche", marca="SER", categoria="lacteos", stock=6, vencimiento=date(2027, 1, 1), ubicacion="Freezer")
-    add_product(db, nombre="  Leche ", marca="Ser", categoria="Lacteos", stock=2, vencimiento=None, codigo_barras=None)
-    add_product(db, nombre="Leche", marca="Otra", categoria="Lacteos", stock=50)
-    add_product(db, nombre="Leche", marca="Ser", categoria="Almacen", stock=70)
-    add_product(db, nombre="Leche entera", marca="Ser", categoria="Lacteos", stock=90)
+def stock_total(client, **params):
+    return client.get("/products/stock-total", params=params, headers=AUTH)
 
 
-def get_group(client, **params):
-    return client.get("/products/group", params=params, headers=AUTH)
+def inventory(db):
+    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=4, ubicacion="Heladera")
+    add_product(db, nombre="Yogur", marca="Leches del Sur", categoria="Lacteos", stock=6, ubicacion="Freezer")
+    add_product(db, nombre="Arroz", marca="Gallo", categoria="Almacen", stock=10, ubicacion="Alacena")
+    add_product(db, nombre="Fideos", marca="Matarazzo", categoria="Almacen", stock=20, ubicacion=None)
 
 
-def test_a_group_adds_up_the_stock_of_every_product_with_the_same_name_and_category(client, db, no_alerts):
-    lots(db)
-
-    body = get_group(client, nombre="Leche", categoria="Lacteos").json()
-
-    assert body["stock_total"] == 62
-    assert body["lotes"] == 4
-    assert len(body["productos"]) == 4
+def test_the_stock_total_adds_up_every_product_of_the_user(client, db, no_alerts):
+    inventory(db)
+    assert stock_total(client).json() == {"stock_total": 40, "products": 4}
 
 
-def test_the_brand_does_not_split_a_group(client, db, no_alerts):
-    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=1)
-    add_product(db, nombre="Leche", marca="Otra", categoria="Lacteos", stock=2)
-    add_product(db, nombre="Leche", marca=None, categoria="Lacteos", stock=4)
-
-    body = get_group(client, nombre="Leche", categoria="Lacteos").json()
-
-    assert body["stock_total"] == 7
-    assert {p["marca"] for p in body["productos"]} == {"Ser", "Otra", None}
-    assert "marca" not in body
+def test_the_stock_total_of_an_empty_inventory_is_zero(client, db, no_alerts):
+    assert stock_total(client).json() == {"stock_total": 0, "products": 0}
 
 
-def test_a_different_category_is_a_different_group(client, db, no_alerts):
-    lots(db)
-
-    assert get_group(client, nombre="Leche", categoria="Almacen").json()["stock_total"] == 70
-
-
-def test_the_group_ignores_case_accents_and_extra_spaces(client, db, no_alerts):
-    add_product(db, nombre="Café", marca="Marca", categoria="Almacén", stock=2)
-    add_product(db, nombre="cafe ", marca="otra", categoria="almacen", stock=3)
-
-    body = get_group(client, nombre="CAFÉ", categoria="Almacen").json()
-
-    assert body["stock_total"] == 5
+def test_the_stock_total_searches_by_name_or_brand_like_the_list(client, db, no_alerts):
+    inventory(db)
+    # «lech» está en el nombre de la leche y en la marca del yogur
+    assert stock_total(client, search="lech").json() == {"stock_total": 10, "products": 2}
+    assert stock_total(client, search="Gallo").json() == {"stock_total": 10, "products": 1}
+    assert stock_total(client, search="zzz").json() == {"stock_total": 0, "products": 0}
 
 
-def test_the_products_come_ordered_by_expiry_with_the_ones_that_do_not_expire_last(client, db, no_alerts):
-    lots(db)
-
-    body = get_group(client, nombre="Leche", categoria="Lacteos").json()
-
-    assert [p["vencimiento"] for p in body["productos"]][:3] == ["2027-01-01", "2027-03-01", None]
-    assert body["productos"][3]["vencimiento"] is None
-
-
-def test_the_group_reports_the_nearest_expiry_of_the_products_that_still_have_stock(client, db, no_alerts):
-    add_product(db, nombre="Yogur", marca="Ser", categoria="Lacteos", stock=0, vencimiento=date(2026, 1, 1))
-    add_product(db, nombre="Yogur", marca="Ser", categoria="Lacteos", stock=3, vencimiento=date(2027, 5, 1))
-
-    body = get_group(client, nombre="Yogur", categoria="Lacteos").json()
-
-    assert body["proximo_vencimiento"] == "2027-05-01"
-    assert body["stock_total"] == 3
-    assert body["lotes"] == 2
+def test_the_stock_total_filters_by_category_and_location(client, db, no_alerts):
+    inventory(db)
+    assert stock_total(client, categoria="Almacen").json() == {"stock_total": 30, "products": 2}
+    assert stock_total(client, ubicacion="Freezer").json() == {"stock_total": 6, "products": 1}
+    assert stock_total(client, categoria="lacteos", ubicacion="heladera").json() == {"stock_total": 4, "products": 1}
+    assert stock_total(client, categoria="Almacen", ubicacion="Freezer").json() == {"stock_total": 0, "products": 0}
 
 
-def test_an_unknown_group_is_a_404(client, db, no_alerts):
-    lots(db)
-
-    assert get_group(client, nombre="Pan", categoria="Lacteos").status_code == 404
-
-
-def test_the_group_never_includes_other_users_products(client, db, no_alerts):
-    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=1)
-    add_product(db, nombre="Leche", marca="Ser", categoria="Lacteos", stock=100, user_id="00000000-0000-0000-0000-00000000dead")
-
-    body = get_group(client, nombre="Leche", categoria="Lacteos").json()
-
-    assert body["stock_total"] == 1
+def test_the_stock_total_matches_exactly_what_the_list_returns_with_the_same_filters(client, db, no_alerts):
+    inventory(db)
+    for filters in ({}, {"search": "lech"}, {"categoria": "Almacen"}, {"search": "a", "ubicacion": "Alacena"}):
+        listed = client.get("/products/", params=filters, headers=AUTH).json()
+        total = stock_total(client, **filters).json()
+        assert total == {"stock_total": sum(p["stock"] for p in listed), "products": len(listed)}
 
 
-def test_the_group_requires_a_name_and_a_category(client, db, no_alerts):
-    assert client.get("/products/group", params={"categoria": "Lacteos"}, headers=AUTH).status_code == 422
-    assert client.get("/products/group", params={"nombre": "Leche"}, headers=AUTH).status_code == 422
+def test_the_stock_total_counts_all_the_products_not_only_a_page(client, db, no_alerts):
+    for index in range(25):
+        add_product(db, nombre=f"Item {index}", categoria="General", stock=2)
+    page = client.get("/products/", params={"limit": 20}, headers=AUTH).json()
+    assert len(page) == 20
+    assert stock_total(client).json() == {"stock_total": 50, "products": 25}
 
 
-def test_group_suggestions_list_each_name_and_category_once_with_its_total(client, db, no_alerts):
-    lots(db)
-
-    resp = client.get("/products/groups", params={"q": "lec"}, headers=AUTH)
-
-    summary = {(g["nombre"], g["categoria"]): g["stock_total"] for g in resp.json()}
-    assert summary[("Leche", "Lacteos")] == 62
-    assert summary[("Leche", "Almacen")] == 70
-    assert summary[("Leche entera", "Lacteos")] == 90
-    assert len(summary) == 3
-    assert all("marca" not in g for g in resp.json())
+def test_the_stock_total_never_includes_other_users_products(client, db, no_alerts):
+    add_product(db, nombre="Mio", categoria="C", stock=3)
+    add_product(db, nombre="Ajeno", categoria="C", stock=99, user_id="00000000-0000-0000-0000-00000000dead")
+    assert stock_total(client).json() == {"stock_total": 3, "products": 1}
 
 
-def test_group_suggestions_ignore_case_and_accents_when_searching(client, db, no_alerts):
-    add_product(db, nombre="Café molido", marca="Marca", categoria="Almacen", stock=2)
-
-    assert [g["nombre"] for g in client.get("/products/groups", params={"q": "CAFE"}, headers=AUTH).json()] == ["Café molido"]
-    assert [g["nombre"] for g in client.get("/products/groups", params={"q": "molido"}, headers=AUTH).json()] == ["Café molido"]
-
-
-def test_the_search_does_not_look_at_the_brand(client, db, no_alerts):
-    add_product(db, nombre="Galletitas", marca="Terrabusi", categoria="Almacen", stock=2)
-
-    assert client.get("/products/groups", params={"q": "terrabusi"}, headers=AUTH).json() == []
+def test_the_stock_total_reflects_the_changes_of_the_inventory(client, db, no_alerts):
+    inventory(db)
+    created = client.post("/products/", json={"nombre": "Nuevo", "categoria": "Almacen", "stock": 5}, headers=AUTH).json()
+    assert stock_total(client).json() == {"stock_total": 45, "products": 5}
+    client.delete(f"/products/{created['id']}", headers=AUTH)
+    assert stock_total(client).json() == {"stock_total": 40, "products": 4}
 
 
-def test_group_suggestions_are_alphabetical_and_limited_to_ten(client, db, no_alerts):
-    for i in range(12):
-        add_product(db, nombre=f"Item {i:02d}", marca="M", categoria="C", stock=1)
-
-    names = [g["nombre"] for g in client.get("/products/groups", params={"q": "item"}, headers=AUTH).json()]
-
-    assert names == [f"Item {i:02d}" for i in range(10)]
-
-
-def test_group_suggestions_sum_every_product_even_when_only_some_match_the_search_text(client, db, no_alerts):
-    add_product(db, nombre="Léche", marca="Ser", categoria="Lacteos", stock=1)
-    add_product(db, nombre="Leche", marca="Otra", categoria="Lacteos", stock=2)
-
-    body = client.get("/products/groups", params={"q": "léche"}, headers=AUTH).json()
-
-    assert len(body) == 1
-    assert body[0]["stock_total"] == 3
-
-
-def test_group_suggestions_find_nothing_for_an_unknown_name_or_a_blank_search(client, db, no_alerts):
-    lots(db)
-
-    assert client.get("/products/groups", params={"q": "zzz"}, headers=AUTH).json() == []
-    assert client.get("/products/groups", params={"q": "   "}, headers=AUTH).json() == []
-
-
-def test_group_suggestions_only_include_the_users_products(client, db, no_alerts):
-    add_product(db, nombre="Ajeno", marca="M", categoria="C", user_id="00000000-0000-0000-0000-00000000dead")
-
-    assert client.get("/products/groups", params={"q": "ajeno"}, headers=AUTH).json() == []
-
-
-def test_group_suggestions_require_a_search_text(client, db, no_alerts):
-    assert client.get("/products/groups", headers=AUTH).status_code == 422
+def test_the_old_group_endpoints_are_gone(client, db, no_alerts):
+    assert client.get("/products/groups", params={"q": "lec"}, headers=AUTH).status_code in (404, 405, 422)
+    assert client.get("/products/group", params={"nombre": "Leche", "categoria": "Lacteos"}, headers=AUTH).status_code in (404, 405, 422)
 
 
 # ── últimos cambios de stock ──────────────────────────────────────────────────
@@ -902,7 +847,7 @@ def test_loading_a_product_again_through_the_api_is_an_entry_of_the_added_stock(
     assert resp.json()[0]["producto"]["id"] == first["id"]
 
 
-def test_a_correction_shows_the_corrected_movement_and_not_the_reversal(client, db, no_alerts):
+def test_a_correction_leaves_a_single_modification_next_to_the_corrected_movement(client, db, no_alerts):
     leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
     client.post(f"/products/{leche.id}/events", json={"event_type": "consumed", "quantity": 4}, headers=AUTH)
     event = db.query(ConsumptionEvent).one()
@@ -910,7 +855,7 @@ def test_a_correction_shows_the_corrected_movement_and_not_the_reversal(client, 
     client.put(f"/products/{leche.id}/events/{event.id}", json={"event_type": "sold", "quantity": 4}, headers=AUTH)
 
     kinds = [c["kind"] for c in get_changes(client, limit=10).json()]
-    assert kinds == ["salida", "entrada"]
+    assert kinds == ["modificacion", "salida", "entrada"]
 
 
 def test_the_limit_is_respected_and_validated(client, db, no_alerts):
@@ -985,3 +930,127 @@ def test_changes_require_a_token(client, db):
         assert client.get("/products/changes").status_code in (401, 403)
     finally:
         app.dependency_overrides[get_current_user] = override
+
+
+# ── historial del producto: notas con fecha, dirección fija y «Últimos cambios» ──
+
+def _stamp(moment):
+    from datetime import timezone
+
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M")
+
+
+def _history_notes(client, product):
+    return [e["note"] for e in client.get(f"/products/{product.id}/consumption", headers=AUTH).json() if e["note"]]
+
+
+def test_the_notes_of_a_correction_say_the_date_of_the_record_and_not_its_number(client, db, no_alerts):
+    product = add_product(db, stock=10)
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 3}, headers=AUTH)
+    original = _latest_event(db, product.id)
+
+    client.put(f"/products/{product.id}/events/{original.id}", json={"event_type": "sold", "quantity": 5}, headers=AUTH)
+
+    notes = _history_notes(client, product)
+    stamp = _stamp(original.consumed_at)
+    assert notes == [f"Corrige el registro del {stamp}", f"Corrige el registro del {stamp}"]
+    assert all("#" not in n and "antes" not in n for n in notes)
+
+
+def test_a_note_written_by_the_user_is_kept_and_undoing_says_deshace(client, db, no_alerts):
+    product = add_product(db, stock=10)
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 3}, headers=AUTH)
+    first = _latest_event(db, product.id)
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 2}, headers=AUTH)
+    second = _latest_event(db, product.id)
+    client.put(f"/products/{product.id}/events/{first.id}", json={"event_type": "consumed", "quantity": 4, "note": "Me equivoqué"}, headers=AUTH)
+    client.delete(f"/products/{product.id}/events/{second.id}", headers=AUTH)
+
+    notes = _history_notes(client, product)
+
+    assert "Me equivoqué" in notes
+    assert f"Deshace el registro del {_stamp(second.consumed_at)}" in notes
+
+
+def test_old_notes_with_a_number_are_shown_with_the_date(client, db, no_alerts):
+    product = add_product(db, stock=10)
+    old = ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=3, event_type="consumed")
+    db.add(old)
+    db.commit()
+    db.refresh(old)
+    db.add_all([
+        ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=3, event_type="restocked",
+                         note=f"Corrección: revierte el registro #{old.id}", reverses_event_id=old.id),
+        ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=5, event_type="consumed",
+                         note=f"Corrige el registro #{old.id} (antes: 3 consumed)"),
+        ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=1, event_type="consumed",
+                         note=f"Deshecho: revierte el registro #{old.id}"),
+        ConsumptionEvent(product_id=product.id, user_id=product.user_id, quantity=1, event_type="consumed",
+                         note="Corrige el registro #999999 (antes: 3 consumed)"),
+    ])
+    db.commit()
+
+    stamp = _stamp(old.consumed_at)
+    assert _history_notes(client, product) == [
+        f"Corrige el registro del {stamp}", f"Corrige el registro del {stamp}", f"Deshace el registro del {stamp}", "Corrige un registro anterior",
+    ]
+
+
+def test_an_entry_never_becomes_an_exit_nor_an_exit_an_entry(client, db, no_alerts):
+    product = add_product(db, stock=15, created_at=CREATED)
+    entrada = add_event(db, product, 5, "restocked", at_time(2))
+    client.post(f"/products/{product.id}/events", json={"event_type": "consumed", "quantity": 3}, headers=AUTH)
+    salida = _latest_event(db, product.id)
+    base = f"/products/{product.id}/events"
+
+    assert client.put(f"{base}/{entrada.id}", json={"event_type": "sold", "quantity": 2}, headers=AUTH).status_code == 400
+    assert client.put(f"{base}/{salida.id}", json={"event_type": "restocked", "quantity": 2}, headers=AUTH).status_code == 400
+    db.refresh(product)
+    assert product.stock == 12
+    assert client.put(f"{base}/{salida.id}", json={"event_type": "expired", "quantity": 2}, headers=AUTH).status_code == 200
+    assert client.put(f"{base}/{entrada.id}", json={"event_type": "restocked", "quantity": 4}, headers=AUTH).status_code == 200
+
+
+def test_editing_an_entry_leaves_one_modification_in_the_latest_changes(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=35, created_at=CREATED)
+    entry = add_event(db, leche, 15, "restocked", at_time(2))
+
+    client.put(f"/products/{leche.id}/events/{entry.id}", json={"event_type": "restocked", "quantity": 13}, headers=AUTH)
+
+    assert [(c["kind"], c["stock_before"], c["stock_after"], c["quantity"]) for c in get_changes(client, limit=10).json()] == [
+        ("modificacion", 35, 33, 2),
+        ("entrada", 20, 35, 15),
+        ("entrada", 0, 20, 20),
+    ]
+
+
+def test_undoing_a_record_leaves_a_modification_with_the_stock_before_and_after(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
+    client.post(f"/products/{leche.id}/events", json={"event_type": "consumed", "quantity": 4}, headers=AUTH)
+    salida = _latest_event(db, leche.id)
+
+    client.delete(f"/products/{leche.id}/events/{salida.id}", headers=AUTH)
+
+    assert [(c["kind"], c["stock_before"], c["stock_after"], c["quantity"]) for c in get_changes(client, limit=10).json()] == [
+        ("modificacion", 6, 10, 4),
+        ("salida", 10, 6, 4),
+        ("entrada", 0, 10, 10),
+    ]
+
+
+def test_two_edits_leave_two_modifications_in_time_order(client, db, no_alerts):
+    leche = add_product(db, nombre="Leche", stock=10, created_at=CREATED)
+    client.post(f"/products/{leche.id}/events", json={"event_type": "consumed", "quantity": 4}, headers=AUTH)
+    salida = _latest_event(db, leche.id)
+    client.put(f"/products/{leche.id}/events/{salida.id}", json={"event_type": "sold", "quantity": 3}, headers=AUTH)
+    corrected = _latest_event(db, leche.id)
+    client.put(f"/products/{leche.id}/events/{corrected.id}", json={"event_type": "sold", "quantity": 1}, headers=AUTH)
+
+    assert [(c["kind"], c["stock_before"], c["stock_after"]) for c in get_changes(client, limit=10).json()] == [
+        ("modificacion", 7, 9),
+        ("modificacion", 6, 7),
+        ("salida", 10, 6),
+        ("entrada", 0, 10),
+    ]
